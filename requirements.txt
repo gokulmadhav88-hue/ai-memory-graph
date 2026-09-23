@@ -1,0 +1,4 @@
+# Placeholder dependency list for the AI memory graph project.
+# Replace with actual project dependencies as implementation begins.
+
+pytest
