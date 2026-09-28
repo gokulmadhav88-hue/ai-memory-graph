@@ -53,7 +53,7 @@ def validate_file(file_path: str | Path) -> Path:
             raise InvalidFile(f"{path.name} has a .pdf extension but is not a real PDF")
         if b"/Encrypt" in path.read_bytes():   # simple check, not perfect
             raise EncryptedFile(f"{path.name} is encrypted or password-protected")
-    elif ext == ".txt":
+    elif ext in (".txt", ".md"):
         if b"\x00" in head:
             raise InvalidFile(f"{path.name} looks like a binary file, not text")
 

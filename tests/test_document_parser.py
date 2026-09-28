@@ -85,3 +85,13 @@ def test_oversized_file_is_rejected():
 def test_missing_file_is_rejected():
     with pytest.raises(InvalidFile):
         parse_document(FIX / "does_not_exist.txt")
+        
+def test_markdown_file_headings_become_sections():
+    chunks = parse_document(FIX / "with_markdown.md")
+    assert [c.section for c in chunks] == ["Company History", "Products"]
+    assert all("#" not in c.text for c in chunks)
+
+
+def test_markdown_bullets_stay_on_separate_lines():
+    chunks = parse_document(FIX / "with_markdown.md")
+    assert "- Text input\n- Image input" in chunks[1].text

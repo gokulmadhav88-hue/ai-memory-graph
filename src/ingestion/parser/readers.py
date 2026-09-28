@@ -58,7 +58,7 @@ def read_pages(file_path: str | Path) -> list[str]:
     path = Path(file_path)
     ext = path.suffix.lower()
 
-    if ext == ".txt":
+    if ext in (".txt", ".md"):
         return _read_txt(path)
     if ext == ".pdf":
         return _read_pdf(path)

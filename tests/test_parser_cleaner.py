@@ -97,3 +97,15 @@ def test_repeated_line_in_page_middle_is_kept():
 def test_sentence_continues_across_page_break():
     out = clean_pages(["OpenAI released GPT-4 in", "March 2023.", "Second page text."])
     assert "GPT-4 in March 2023." in out
+
+def test_heading_directly_above_text_stays_separate():
+    out = clean_text("# Company History\nOpenAI was founded in 2015.")
+    assert out.startswith("# Company History\n\nOpenAI")
+
+
+def test_bullet_list_keeps_separate_lines():
+    assert "- Text input\n- Image input" in clean_text("Intro.\n\n- Text input\n- Image input")
+
+
+def test_wrapped_line_starting_with_year_still_joins():
+    assert clean_text("released in March\n2023. The company") == "released in March 2023. The company"

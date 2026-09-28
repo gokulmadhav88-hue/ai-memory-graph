@@ -26,7 +26,7 @@ _QUOTES = {
 _TOC_LINE = re.compile(r"^.*\.{4,}\s*\d+\s*$", re.MULTILINE)
 _TOC_HEADING = re.compile(r"^\s*(table of contents|contents)\s*$", re.IGNORECASE | re.MULTILINE)
 _COPYRIGHT = re.compile(r"^.*(©|\(c\)\s*\d{4}|all rights reserved).*$", re.IGNORECASE | re.MULTILINE)
-_REFERENCES = re.compile(r"^\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
+_REFERENCES = re.compile(r"^\s*#*\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
 
 _PAGE_NUMBER = re.compile(r"^\s*(page\s*)?\d+(\s*(of|/)\s*\d+)?\s*$", re.IGNORECASE)
 _PAGE_PHRASE = re.compile(r"\bpage\s*\d+(\s*(of|/)\s*\d+)?", re.IGNORECASE)
@@ -134,14 +134,22 @@ def drop_junk_sections(text: str) -> str:
     return text
 
 
+def isolate_markdown_headings(text: str) -> str:
+    """Put blank lines around '# Heading' lines, so a heading never merges into the
+    paragraph beside it when single newlines are joined."""
+    return re.sub(r"^(#{1,6}[ \t]+.+)$", r"\n\1\n", text, flags=re.MULTILINE)
+
+
 def fix_broken_lines(text: str) -> str:
     """Rule 13: rejoin hyphenated words and lines broken mid-sentence.
 
-    A single newline becomes a space. A blank line is kept, since it marks a paragraph.
+    A single newline becomes a space, EXCEPT before a bullet or numbered-list item, which
+    stays on its own line (rule 17, partly). A blank line is kept, since it marks a paragraph.
+    List markers are 1-2 digits only, so a wrapped line starting with a year ("2023.") still joins.
     Known limit: a real hyphen at a line end ("well-\\nknown") loses its hyphen.
     """
     text = re.sub(r"(?<=\w)-\n(?=[a-z])", "", text)
-    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    text = re.sub(r"(?<!\n)\n(?!\n)(?![ \t]*(?:[-*+\u2022][ \t]|\d{1,2}[.)][ \t]))", " ", text)
     return text
 
 
@@ -160,6 +168,7 @@ def clean_text(text: str) -> str:
     text = normalize_encoding(text)
     text = strip_invisible(text)
     text = drop_junk_sections(text)
+    text = isolate_markdown_headings(text)      # new line
     text = fix_broken_lines(text)
     text = collapse_whitespace(text)
 
