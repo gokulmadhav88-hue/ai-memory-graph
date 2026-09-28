@@ -5,3 +5,5 @@ pytest
 pytest
 reportlab
 pdfplumber
+python-docx
+openpyxl

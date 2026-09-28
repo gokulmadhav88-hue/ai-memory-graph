@@ -85,7 +85,7 @@ def test_oversized_file_is_rejected():
 def test_missing_file_is_rejected():
     with pytest.raises(InvalidFile):
         parse_document(FIX / "does_not_exist.txt")
-        
+
 def test_markdown_file_headings_become_sections():
     chunks = parse_document(FIX / "with_markdown.md")
     assert [c.section for c in chunks] == ["Company History", "Products"]
@@ -95,3 +95,51 @@ def test_markdown_file_headings_become_sections():
 def test_markdown_bullets_stay_on_separate_lines():
     chunks = parse_document(FIX / "with_markdown.md")
     assert "- Text input\n- Image input" in chunks[1].text
+
+def texts_of(chunks, kind):
+    return [c for c in chunks if c.content_type == kind]
+
+
+def test_csv_becomes_table_chunk():
+    chunks = parse_document(FIX / "models.csv")
+    assert [c.content_type for c in chunks] == ["table"]
+    assert "Model GPT-4: Company is OpenAI, Year is 2023." in chunks[0].text
+
+
+def test_xlsx_becomes_table_chunk():
+    chunks = parse_document(FIX / "models.xlsx")
+    assert [c.content_type for c in chunks] == ["table"]
+    assert "Model Claude 2: Company is Anthropic, Year is 2023." in chunks[0].text
+
+
+def test_docx_text_and_table_are_separate_chunks():
+    chunks = parse_document(FIX / "report_with_table.docx")
+    prose, tables = texts_of(chunks, "text"), texts_of(chunks, "table")
+    assert prose and tables
+    assert prose[0].section == "Company History"
+    assert all("Table 1" not in c.text for c in prose)          # caption moved to the table
+    assert "Table 1: Model release dates." in tables[0].text
+    assert "Model GPT-4: Company is OpenAI, Year is 2023." in tables[0].text
+
+
+def test_markdown_table_is_extracted():
+    chunks = parse_document(FIX / "with_table.md")
+    prose, tables = texts_of(chunks, "text"), texts_of(chunks, "table")
+    assert prose and len(tables) == 1
+    assert "|" not in " ".join(c.text for c in prose)
+    assert "Table 1: Model release dates." in tables[0].text
+
+
+def test_pdf_table_is_extracted_and_not_duplicated_in_text():
+    chunks = parse_document(FIX / "table.pdf")
+    prose, tables = texts_of(chunks, "text"), texts_of(chunks, "table")
+    assert tables
+    assert tables[0].page == 1
+    assert "Model GPT-4: Company is OpenAI, Year is 2023." in tables[0].text
+    assert all("Anthropic" not in c.text for c in prose)        # table text was cut out of the prose
+    assert all("Table 1" not in c.text for c in prose)
+
+
+def test_fake_docx_is_rejected():
+    with pytest.raises(InvalidFile):
+        parse_document(FIX / "fake_docx.docx")

@@ -4,10 +4,9 @@ Bump PARSER_VERSION whenever a change alters the parser's output
 (new chunk size, new cleaning rule, changed split).
 """
 
-PARSER_VERSION = "0.3.1"
+PARSER_VERSION = "0.4.0"
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".xlsx"}
 
-# --- Input validation (rules 1, 5) ---
-SUPPORTED_EXTENSIONS = {".txt", ".pdf",".md"}   # Tier 1. Add ".docx", ".csv", ".xlsx" in Tier 2
 MAX_FILE_SIZE_MB = 20
 
 # --- Cleaning (rules 12, 16) ---
@@ -23,6 +22,10 @@ MIN_CHUNK_WORDS = 30
 TARGET_CHUNK_WORDS = 400
 MAX_CHUNK_WORDS = 600
 OVERLAP_SENTENCES = 1
+# --- Tables (rules 24-27) ---
+MAX_TABLE_COLS_FOR_SENTENCES = 8   # wider tables fall back to a Markdown grid
+TABLE_ROWS_PER_CHUNK = 10
+MAX_TABLE_ROWS = 500               # longer tables are truncated, with a warning
 
 # --- Junk / duplicate chunk removal (rule 22) ---
 MIN_ALPHA_RATIO = 0.5             # drop chunks where under 50% of characters are letters
