@@ -1,7 +1,10 @@
 """Cleaning rules, applied in order (rules 10-17). Built one rule at a time.
 
-Done: 10 (encoding/quotes), 11 (invisible characters), 14 (whitespace).
-Todo: 12 (headers/footers), 13 (broken lines), 15 (junk sections).
+Done: 10 (encoding/quotes), 11 (invisible chars), 13 (broken lines),
+      14 (whitespace), 15 (junk sections).
+Todo: 12 (headers/footers, needs PDF pages), 17 (keep lists/code intact).
+
+Order matters: junk removal is line-based, so it runs BEFORE line joining.
 """
 
 from __future__ import annotations
@@ -15,15 +18,20 @@ from . import config
 log = logging.getLogger(__name__)
 
 _QUOTES = {
-    "\u2018": "'", "\u2019": "'",   # curly single quotes
-    "\u201c": '"', "\u201d": '"',   # curly double quotes
+    "\u2018": "'", "\u2019": "'",
+    "\u201c": '"', "\u201d": '"',
 }
+
+_TOC_LINE = re.compile(r"^.*\.{4,}\s*\d+\s*$", re.MULTILINE)
+_TOC_HEADING = re.compile(r"^\s*(table of contents|contents)\s*$", re.IGNORECASE | re.MULTILINE)
+_COPYRIGHT = re.compile(r"^.*(©|\(c\)\s*\d{4}|all rights reserved).*$", re.IGNORECASE | re.MULTILINE)
+_REFERENCES = re.compile(r"^\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 def normalize_encoding(text: str) -> str:
     """Rule 10: consistent characters, so the same name is always the same string."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = unicodedata.normalize("NFKC", text)   # also turns non-breaking spaces into spaces
+    text = unicodedata.normalize("NFKC", text)
     for curly, straight in _QUOTES.items():
         text = text.replace(curly, straight)
     return text
@@ -34,12 +42,40 @@ def strip_invisible(text: str) -> str:
     kept = []
     for ch in text:
         category = unicodedata.category(ch)
-        if category == "Cf":                      # zero-width, soft hyphen, BOM, etc.
+        if category == "Cf":
             continue
-        if category == "Cc" and ch not in "\n\t":  # control characters
+        if category == "Cc" and ch not in "\n\t":
             continue
         kept.append(ch)
     return "".join(kept)
+
+
+def drop_junk_sections(text: str) -> str:
+    """Rule 15: table of contents, copyright lines, and the references section."""
+    text = _TOC_LINE.sub("", text)
+    text = _TOC_HEADING.sub("", text)
+    text = _COPYRIGHT.sub("", text)
+
+    if config.CUT_REFERENCES:
+        last = None
+        for last in _REFERENCES.finditer(text):
+            pass
+        # Only cut if the heading sits well into the document, so a document that
+        # merely starts with the word "References" isn't wiped out.
+        if last is not None and last.start() > len(text) * 0.3:
+            text = text[: last.start()]
+    return text
+
+
+def fix_broken_lines(text: str) -> str:
+    """Rule 13: rejoin hyphenated words and lines broken mid-sentence.
+
+    A single newline becomes a space. A blank line is kept, since it marks a paragraph.
+    Known limit: a real hyphen at a line end ("well-\\nknown") loses its hyphen.
+    """
+    text = re.sub(r"(?<=\w)-\n(?=[a-z])", "", text)
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    return text
 
 
 def collapse_whitespace(text: str) -> str:
@@ -52,14 +88,14 @@ def collapse_whitespace(text: str) -> str:
 
 def clean_text(text: str) -> str:
     """Run every cleaning rule, in order."""
-    original_length = len(text)
+    original_length = len(text.strip())
 
     text = normalize_encoding(text)
     text = strip_invisible(text)
-    # rule 12 (headers/footers) goes here
-    # rule 13 (broken lines) goes here
+    # rule 12 (headers/footers) goes here, once PDF pages are available
+    text = drop_junk_sections(text)
+    text = fix_broken_lines(text)
     text = collapse_whitespace(text)
-    # rule 15 (junk sections) goes here
 
     if original_length and len(text) < original_length * (1 - config.CLEANING_LOSS_WARNING):
         log.warning("Cleaning removed over %d%% of the text, check the rules",

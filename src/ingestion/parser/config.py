@@ -23,3 +23,4 @@ OVERLAP_SENTENCES = 1
 # --- Junk / duplicate chunk removal (rule 22) ---
 MIN_ALPHA_RATIO = 0.5             # drop chunks where under 50% of characters are letters
 DUPLICATE_SIMILARITY = 0.9        # chunks this similar count as duplicates
+CUT_REFERENCES = True             # drop everything after a "References" heading (rule 15)

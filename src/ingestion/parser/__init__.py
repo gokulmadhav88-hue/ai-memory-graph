@@ -6,7 +6,8 @@ import logging
 from pathlib import Path
 
 from . import config
-from .chunker import split_paragraphs
+from .chunker import chunk_text
+from .cleaner import clean_text
 from .readers import read_text
 from .schema import Chunk
 from .validator import (
@@ -18,7 +19,6 @@ from .validator import (
     file_hash,
     validate_file,
 )
-from .cleaner import clean_text
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def parse_document(file_path: str | Path) -> list[Chunk]:
     digest = file_hash(path)
     text = clean_text(read_text(path))
 
-    pieces = split_paragraphs(text)
+    pieces = chunk_text(text)
     if not pieces:
         log.warning("%s: no text found, returning no chunks", path.name)
         return []
@@ -37,10 +37,11 @@ def parse_document(file_path: str | Path) -> list[Chunk]:
         Chunk(
             doc_id=path.stem,
             chunk_index=i,
-            text=piece,
+            text=piece.text,
             source_filename=path.name,
             content_hash=digest,
             parser_version=config.PARSER_VERSION,
+            section=piece.section,
         )
         for i, piece in enumerate(pieces)
     ]
