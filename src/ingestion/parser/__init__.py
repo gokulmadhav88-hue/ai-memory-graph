@@ -18,6 +18,7 @@ from .validator import (
     file_hash,
     validate_file,
 )
+from .cleaner import clean_text
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ log = logging.getLogger(__name__)
 def parse_document(file_path: str | Path) -> list[Chunk]:
     path = validate_file(file_path)
     digest = file_hash(path)
-    text = read_text(path)
+    text = clean_text(read_text(path))
 
     pieces = split_paragraphs(text)
     if not pieces:
