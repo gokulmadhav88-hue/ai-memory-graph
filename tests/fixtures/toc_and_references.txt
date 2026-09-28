@@ -1,0 +1,15 @@
+Contents
+Introduction ........ 1
+Company History ........ 3
+Conclusion ........ 7
+
+Introduction
+
+OpenAI released GPT-4 in March 2023. The model was covered widely.
+
+(c) 2023 Example Corp. All rights reserved.
+
+References
+
+[1] Smith, J. (2023). A history of AI.
+[2] Jones, K. (2022). Language models.

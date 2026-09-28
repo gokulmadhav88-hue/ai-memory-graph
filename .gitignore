@@ -11,3 +11,5 @@ htmlcov/
 .idea/
 .vscode/
 **/.ipynb_checkpoints/
+tests/fixtures/too_large.txt
+scratch_run.py
