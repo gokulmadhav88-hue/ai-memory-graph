@@ -7,8 +7,8 @@ from pathlib import Path
 
 from . import config
 from .chunker import chunk_text
-from .cleaner import clean_text
-from .readers import read_text
+from .cleaner import clean_pages
+from .readers import read_pages
 from .schema import Chunk
 from .validator import (
     EncryptedFile,
@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 def parse_document(file_path: str | Path) -> list[Chunk]:
     path = validate_file(file_path)
     digest = file_hash(path)
-    text = clean_text(read_text(path))
+    text = clean_pages(read_pages(path))
 
     pieces = chunk_text(text)
     if not pieces:

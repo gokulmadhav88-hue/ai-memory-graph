@@ -1,4 +1,5 @@
 from src.ingestion.parser.cleaner import clean_text
+from src.ingestion.parser.cleaner import clean_pages
 
 
 # --- Rule 10: encoding and quotes ---
@@ -68,3 +69,31 @@ def test_blank_text_does_not_trigger_loss_warning(caplog):
     with caplog.at_level("WARNING"):
         clean_text("   \n\n   ")
     assert "Cleaning removed" not in caplog.text
+
+def test_repeated_header_and_footer_removed():
+    pages = [f"Acme Report\nBody text number {i} about OpenAI models.\nPage {i}" for i in range(1, 5)]
+    out = clean_pages(pages)
+    assert "Acme Report" not in out
+    assert "Page" not in out
+    assert "Body text number 3" in out
+
+
+def test_bare_page_numbers_removed():
+    pages = [f"Sentence about {w}.\n{i}" for i, w in enumerate(["alpha", "beta", "gamma"], start=1)]
+    out = clean_pages(pages)
+    assert not any(tok.isdigit() for tok in out.split())
+    assert "alpha" in out and "gamma" in out
+
+
+def test_repeated_line_in_page_middle_is_kept():
+    # 7 lines per page: lines 0-1 are the header zone, 5-6 the footer zone, line 3 is the middle
+    pages = [
+        f"Top {i}\nHead {i}\nBody A {i}\nThis line repeats everywhere.\nBody B {i}\nFoot {i}\nBottom {i}"
+        for i in range(1, 5)
+    ]
+    assert "This line repeats everywhere." in clean_pages(pages)
+
+
+def test_sentence_continues_across_page_break():
+    out = clean_pages(["OpenAI released GPT-4 in", "March 2023.", "Second page text."])
+    assert "GPT-4 in March 2023." in out

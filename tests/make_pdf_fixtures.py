@@ -19,8 +19,8 @@ def simple_pdf(path, pages=1, footer=False, encrypt=None):
         if footer:
             c.drawString(72, y, "Acme Research Report")      # repeating header
             y -= 40
-        for line in BODY:
-            c.drawString(72, y, line)
+        for k, line in enumerate(BODY):
+            c.drawString(72, y, f"({n}) {line}" if k == 0 else line)
             y -= 18
         c.drawString(72, y - 18, f"Page-specific note number {n}.")
         if footer:
