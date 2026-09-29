@@ -1,8 +1,5 @@
-from src.ingestion.parser.cleaner import clean_text
-from src.ingestion.parser.cleaner import clean_pages
+from src.ingestion.parser.cleaner import clean_pages, clean_text
 
-
-# --- Rule 10: encoding and quotes ---
 
 def test_curly_quotes_become_straight():
     assert clean_text("OpenAI\u2019s \u201cGPT-4\u201d") == 'OpenAI\'s "GPT-4"'
@@ -12,13 +9,9 @@ def test_non_breaking_space_becomes_space():
     assert clean_text("March\u00a02023") == "March 2023"
 
 
-# --- Rule 11: invisible characters ---
-
 def test_zero_width_characters_removed():
     assert clean_text("Open\u200bAI") == "OpenAI"
 
-
-# --- Rule 14: whitespace ---
 
 def test_extra_spaces_collapsed():
     assert clean_text("OpenAI    released   GPT-4.") == "OpenAI released GPT-4."
@@ -32,8 +25,6 @@ def test_paragraph_break_is_kept():
     assert clean_text("one\n\ntwo") == "one\n\ntwo"
 
 
-# --- Rule 13: broken lines ---
-
 def test_hyphenated_word_is_rejoined():
     assert clean_text("The company was co-found-\ned by Sam.") == "The company was co-founded by Sam."
 
@@ -41,8 +32,6 @@ def test_hyphenated_word_is_rejoined():
 def test_broken_line_becomes_one_sentence():
     assert clean_text("released GPT-4 in March\n2023.") == "released GPT-4 in March 2023."
 
-
-# --- Rule 15: junk sections ---
 
 def test_toc_lines_removed():
     text = "Contents\nIntroduction ........ 1\nConclusion ........ 7\n\nReal text starts here."
@@ -65,17 +54,25 @@ def test_references_word_at_start_does_not_wipe_document():
     text = "References\n\nThis document explains OpenAI and its models in detail."
     assert "OpenAI" in clean_text(text)
 
+
 def test_blank_text_does_not_trigger_loss_warning(caplog):
     with caplog.at_level("WARNING"):
         clean_text("   \n\n   ")
     assert "Cleaning removed" not in caplog.text
 
+
 def test_repeated_header_and_footer_removed():
-    pages = [f"Acme Report\nBody text number {i} about OpenAI models.\nPage {i}" for i in range(1, 5)]
+    pages = [
+        f"Acme Report\nConfidential\nBody A {i}\nThis line repeats everywhere.\nBody B {i}\nInternal Use\nBottom"
+        for i in range(1, 5)
+    ]
     out = clean_pages(pages)
     assert "Acme Report" not in out
-    assert "Page" not in out
-    assert "Body text number 3" in out
+    assert "Confidential" not in out
+    assert "Internal Use" not in out
+    assert "Bottom" not in out
+    assert "This line repeats everywhere." in out
+    assert "Body A 3" in out
 
 
 def test_bare_page_numbers_removed():
@@ -86,7 +83,6 @@ def test_bare_page_numbers_removed():
 
 
 def test_repeated_line_in_page_middle_is_kept():
-    # 7 lines per page: lines 0-1 are the header zone, 5-6 the footer zone, line 3 is the middle
     pages = [
         f"Top {i}\nHead {i}\nBody A {i}\nThis line repeats everywhere.\nBody B {i}\nFoot {i}\nBottom {i}"
         for i in range(1, 5)
@@ -97,6 +93,7 @@ def test_repeated_line_in_page_middle_is_kept():
 def test_sentence_continues_across_page_break():
     out = clean_pages(["OpenAI released GPT-4 in", "March 2023.", "Second page text."])
     assert "GPT-4 in March 2023." in out
+
 
 def test_heading_directly_above_text_stays_separate():
     out = clean_text("# Company History\nOpenAI was founded in 2015.")

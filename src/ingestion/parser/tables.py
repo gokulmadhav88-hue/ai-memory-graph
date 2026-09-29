@@ -1,35 +1,35 @@
-"""Tier 2: table handling (rules 24-27).
-
-A Table is rows of cells, the first row being the header. table_to_texts() turns it into
-one or more chunk texts: one sentence per row (headers repeated), or a Markdown grid for
-wide or messy tables. Rows are never split, and the caption and column line are repeated
-in every part of a long table.
+"""Tier 2: table handling (rules 24-27), plus gap fixes:
+- numeric-heavy tables are flagged (is_numeric_table)
+- a headerless continuation table (same column count, right after the previous one,
+  no page gap) is merged into the table before it, instead of treating its first
+  data row as a header
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import config
 
 log = logging.getLogger(__name__)
 
-# "Table 1: ..." or "Table 2. ..." A sentence like "Table 2 shows..." is NOT a caption.
 _CAPTION = re.compile(r"^\s*\**\s*(table\s+\d+[a-z]?\s*[:.\-\u2013].*?)\**\s*$", re.IGNORECASE)
 _CAPTION_MAX_WORDS = 30
+_NUMERIC_CELL = re.compile(r"^[\s\-+$€£%.,0-9]+$")
 
 
 @dataclass
 class Table:
-    rows: list[list[str]]        # first row is the header
+    rows: list[list[str]]
     caption: str | None = None
     page: int | None = None
+    section: str | None = None      # gap fix: nearest heading before this table
+    continuation: bool = False      # gap fix: true if this table has no real header row
 
 
 def is_caption(line: str) -> str | None:
-    """'Table 1: Model release dates.' -> the caption text, otherwise None."""
     if len(line.split()) > _CAPTION_MAX_WORDS:
         return None
     m = _CAPTION.match(line)
@@ -37,7 +37,6 @@ def is_caption(line: str) -> str | None:
 
 
 def extract_captions(text: str, count: int) -> tuple[str, list[str | None]]:
-    """Find up to `count` caption lines in page text. Returns (text without them, captions)."""
     captions: list[str | None] = []
     kept: list[str] = []
     for line in text.split("\n"):
@@ -70,9 +69,23 @@ def _where(table: Table) -> str:
     return "table " + " ".join(bits) if bits else "table"
 
 
+def merge_continuations(tables: list[Table]) -> list[Table]:
+    """Gap fix: a table on page N+1 with no caption, the same column count, and no
+    other table between it and the one on page N is treated as its continuation."""
+    merged: list[Table] = []
+    for t in tables:
+        prev = merged[-1] if merged else None
+        same_width = prev and prev.rows and t.rows and len(prev.rows[0]) == len(t.rows[0])
+        consecutive_page = prev and prev.page is not None and t.page is not None and t.page - prev.page <= 1
+        if prev and same_width and consecutive_page and not t.caption:
+            prev.rows = prev.rows + t.rows
+            continue
+        t.continuation = False
+        merged.append(t)
+    return merged
+
+
 def clean_table(table: Table) -> list[list[str]] | None:
-    """Normalise cells, drop empty rows and columns, pad ragged rows (rule 27).
-    Returns None when there is no data row."""
     rows = [_strip_trailing([_cell(c) for c in r]) for r in table.rows]
     rows = [r for r in rows if r]
     if len(rows) < 2:
@@ -87,13 +100,23 @@ def clean_table(table: Table) -> list[list[str]] | None:
     width = max(len(r) for r in rows)
     rows = [r + [""] * (width - len(r)) for r in rows]
 
-    # data under a column that has no header gets a placeholder name
     for i in range(header_len, width):
         if any(r[i] for r in rows[1:]):
             rows[0][i] = f"column {i + 1}"
 
     keep = [i for i in range(width) if any(r[i] for r in rows)]
     return [[r[i] for i in keep] for r in rows]
+
+
+def is_numeric_heavy(header: list[str], body: list[list[str]]) -> bool:
+    """Gap fix: true when most non-header cells are numbers/symbols, not words.
+    A numeric table still gets stored (for the vector store), but is flagged so the
+    extraction agent can treat it as low-value for the graph."""
+    cells = [c for row in body for c in row if c]
+    if not cells:
+        return False
+    non_numeric = sum(1 for c in cells if not _NUMERIC_CELL.match(c))
+    return (non_numeric / len(cells)) < config.MIN_ALPHA_CELL_RATIO_FOR_ENTITIES
 
 
 def _use_sentences(header: list[str]) -> bool:
@@ -142,8 +165,15 @@ def _caption_line(caption: str | None, n: int, total: int) -> str:
     return base
 
 
-def table_to_texts(table: Table) -> list[str]:
-    """Rules 24-26: a table becomes one or more chunk texts."""
+@dataclass
+class TablePiece:
+    text: str
+    page: int | None
+    section: str | None
+    is_numeric: bool = False
+
+
+def table_to_texts(table: Table) -> list[TablePiece]:
     rows = clean_table(table)
     if rows is None:
         return []
@@ -153,6 +183,8 @@ def table_to_texts(table: Table) -> list[str]:
         log.warning("%s has %d rows, keeping the first %d",
                     _where(table), len(body), config.MAX_TABLE_ROWS)
         body = body[: config.MAX_TABLE_ROWS]
+
+    numeric = is_numeric_heavy(header, body)
 
     if _use_sentences(header):
         lines = [s for s in (_row_sentence(header, r) for r in body) if s]
@@ -165,11 +197,14 @@ def table_to_texts(table: Table) -> list[str]:
 
     groups = _group(lines)
     return [
-        "\n".join([_caption_line(table.caption, n, len(groups))] + prefix + group)
+        TablePiece(
+            text="\n".join([_caption_line(table.caption, n, len(groups))] + prefix + group),
+            page=table.page, section=table.section, is_numeric=numeric,
+        )
         for n, group in enumerate(groups, start=1)
     ]
 
 
-def table_pieces(tables: list[Table]) -> list[tuple[str, int | None]]:
-    """All tables of a document as (chunk text, page) pairs."""
-    return [(text, t.page) for t in tables for text in table_to_texts(t)]
+def table_pieces(tables: list[Table]) -> list[TablePiece]:
+    """All tables of a document, continuations merged first."""
+    return [piece for t in merge_continuations(tables) for piece in table_to_texts(t)]

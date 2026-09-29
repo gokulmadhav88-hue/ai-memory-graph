@@ -29,7 +29,6 @@ class InvalidFile(ParserError):
 
 
 def validate_file(file_path: str | Path) -> Path:
-    """Check the file is real, supported, small enough, and matches its extension."""
     path = Path(file_path)
 
     if not path.is_file():
@@ -51,7 +50,7 @@ def validate_file(file_path: str | Path) -> Path:
     if ext == ".pdf":
         if not head.startswith(b"%PDF"):
             raise InvalidFile(f"{path.name} has a .pdf extension but is not a real PDF")
-        if b"/Encrypt" in path.read_bytes():   # simple check, not perfect
+        if b"/Encrypt" in path.read_bytes():
             raise EncryptedFile(f"{path.name} is encrypted or password-protected")
     elif ext in (".docx", ".xlsx"):
         if head.startswith(b"\xd0\xcf\x11\xe0"):
@@ -66,7 +65,6 @@ def validate_file(file_path: str | Path) -> Path:
 
 
 def file_hash(file_path: str | Path) -> str:
-    """SHA-256 of the whole file, used as content_hash on every chunk (rule 6)."""
     h = hashlib.sha256()
     with open(file_path, "rb") as f:
         for block in iter(lambda: f.read(1024 * 1024), b""):

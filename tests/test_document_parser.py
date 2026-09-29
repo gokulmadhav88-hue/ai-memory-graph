@@ -19,6 +19,12 @@ def joined(chunks):
     return " ".join(c.text for c in chunks)
 
 
+def texts_of(chunks, kind):
+    return [c for c in chunks if c.content_type == kind]
+
+
+# --- Tier 1 ---
+
 def test_txt_chunks_have_contract_fields():
     chunks = parse_document(AI_NEWS)
     assert len(chunks) >= 1
@@ -28,6 +34,7 @@ def test_txt_chunks_have_contract_fields():
     assert c.source_filename == "ai_news.txt"
     assert c.content_hash and c.parser_version
     assert c.content_type == "text"
+    assert c.is_numeric_table is False
 
 
 def test_same_input_gives_same_output():
@@ -86,6 +93,7 @@ def test_missing_file_is_rejected():
     with pytest.raises(InvalidFile):
         parse_document(FIX / "does_not_exist.txt")
 
+
 def test_markdown_file_headings_become_sections():
     chunks = parse_document(FIX / "with_markdown.md")
     assert [c.section for c in chunks] == ["Company History", "Products"]
@@ -96,9 +104,8 @@ def test_markdown_bullets_stay_on_separate_lines():
     chunks = parse_document(FIX / "with_markdown.md")
     assert "- Text input\n- Image input" in chunks[1].text
 
-def texts_of(chunks, kind):
-    return [c for c in chunks if c.content_type == kind]
 
+# --- Tier 2 ---
 
 def test_csv_becomes_table_chunk():
     chunks = parse_document(FIX / "models.csv")
@@ -117,7 +124,7 @@ def test_docx_text_and_table_are_separate_chunks():
     prose, tables = texts_of(chunks, "text"), texts_of(chunks, "table")
     assert prose and tables
     assert prose[0].section == "Company History"
-    assert all("Table 1" not in c.text for c in prose)          # caption moved to the table
+    assert all("Table 1" not in c.text for c in prose)
     assert "Table 1: Model release dates." in tables[0].text
     assert "Model GPT-4: Company is OpenAI, Year is 2023." in tables[0].text
 
@@ -136,10 +143,39 @@ def test_pdf_table_is_extracted_and_not_duplicated_in_text():
     assert tables
     assert tables[0].page == 1
     assert "Model GPT-4: Company is OpenAI, Year is 2023." in tables[0].text
-    assert all("Anthropic" not in c.text for c in prose)        # table text was cut out of the prose
+    assert all("Anthropic" not in c.text for c in prose)
     assert all("Table 1" not in c.text for c in prose)
 
 
 def test_fake_docx_is_rejected():
     with pytest.raises(InvalidFile):
         parse_document(FIX / "fake_docx.docx")
+
+
+# --- gap fixes ---
+
+def test_numeric_csv_table_is_flagged():
+    chunks = parse_document(FIX / "numeric_table.csv")
+    assert chunks[0].content_type == "table"
+    assert chunks[0].is_numeric_table is True
+
+
+def test_named_table_is_not_flagged_numeric():
+    chunks = parse_document(FIX / "models.csv")
+    assert chunks[0].is_numeric_table is False
+
+
+def test_docx_table_inherits_preceding_heading_as_section():
+    chunks = parse_document(FIX / "pricing.docx")
+    tables = texts_of(chunks, "table")
+    assert tables
+    assert tables[0].section == "Pricing"
+
+
+def test_pdf_spanning_table_is_merged_not_split_with_false_header():
+    chunks = parse_document(FIX / "spanning_table.pdf")
+    tables = texts_of(chunks, "table")
+    assert len(tables) == 1                     # merged into one logical table
+    joined_text = " ".join(t.text for t in tables)
+    for i in range(10):
+        assert f"Model M{i}: Score is {i}." in joined_text

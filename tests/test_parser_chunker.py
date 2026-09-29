@@ -15,7 +15,7 @@ def test_long_paragraph_splits_at_sentence_boundaries():
     pieces = chunk_text(text)
     assert len(pieces) > 1
     for p in pieces:
-        assert p.text.rstrip().endswith(".")                       # never cut mid-sentence
+        assert p.text.rstrip().endswith(".")
         assert words(p.text) <= config.MAX_CHUNK_WORDS
 
 

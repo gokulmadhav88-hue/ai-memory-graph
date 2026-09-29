@@ -1,9 +1,4 @@
-"""Splitting cleaned text into chunks (rules 18-23).
-
-Steps: split into paragraphs -> drop junk -> detect headings (they become `section`,
-not chunks) -> drop near-duplicates -> split over-long paragraphs at sentence
-boundaries -> merge short pieces -> add a small overlap.
-"""
+"""Splitting cleaned text into chunks (rules 18-23)."""
 
 from __future__ import annotations
 
@@ -45,7 +40,6 @@ def split_sentences(text: str) -> list[str]:
 
 
 def is_junk(text: str) -> bool:
-    """Rule 22: mostly symbols, numbers, or a bare URL."""
     stripped = _URL.sub("", text).strip()
     non_space = [c for c in stripped if not c.isspace()]
     if not non_space:
@@ -55,7 +49,6 @@ def is_junk(text: str) -> bool:
 
 
 def heading_text(paragraph: str) -> str | None:
-    """Rule 23: a markdown '#' line, or a short line with no closing punctuation."""
     line = paragraph.strip()
     if "\n" in line:
         return None
@@ -67,7 +60,6 @@ def heading_text(paragraph: str) -> str | None:
 
 
 def split_long(text: str) -> list[str]:
-    """Rules 18-19: split an over-long paragraph at sentence boundaries."""
     if _words(text) <= config.MAX_CHUNK_WORDS:
         return [text]
 
@@ -76,7 +68,7 @@ def split_long(text: str) -> list[str]:
     count = 0
     for sentence in split_sentences(text):
         w = _words(sentence)
-        if w > config.MAX_CHUNK_WORDS:          # one giant sentence: hard split by words
+        if w > config.MAX_CHUNK_WORDS:
             if current:
                 parts.append(" ".join(current))
                 current, count = [], 0
@@ -95,7 +87,6 @@ def split_long(text: str) -> list[str]:
 
 
 def merge_small(units: list[Piece]) -> list[Piece]:
-    """Rule 19: join pieces under the minimum size with a neighbour in the same section."""
     out: list[Piece] = []
     buf: Piece | None = None
     for u in units:
@@ -115,7 +106,6 @@ def merge_small(units: list[Piece]) -> list[Piece]:
     if buf is not None:
         out.append(buf)
 
-    # a short leftover at the end folds into the chunk before it
     if len(out) >= 2:
         last, prev = out[-1], out[-2]
         if (
@@ -129,7 +119,6 @@ def merge_small(units: list[Piece]) -> list[Piece]:
 
 
 def add_overlap(pieces: list[Piece]) -> list[Piece]:
-    """Rule 20: start each chunk with the last sentence(s) of the previous one (same section)."""
     if config.OVERLAP_SENTENCES <= 0:
         return pieces
     result: list[Piece] = []
@@ -144,7 +133,6 @@ def add_overlap(pieces: list[Piece]) -> list[Piece]:
 
 
 def chunk_text(text: str) -> list[Piece]:
-    """Turn cleaned text into ordered pieces, each with an optional section."""
     section: str | None = None
     units: list[Piece] = []
     seen: list[str] = []

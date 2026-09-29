@@ -1,11 +1,4 @@
-"""Cleaning rules, applied in order (rules 10-17).
-
-Done: 10 (encoding/quotes), 11 (invisible chars), 12 (headers/footers/page numbers),
-      13 (broken lines), 14 (whitespace), 15 (junk sections), 16 (loss warning).
-Todo: 17 (keep lists/code intact).
-
-Order matters: junk removal is line-based, so it runs BEFORE line joining.
-"""
+"""Cleaning rules, applied in order (rules 10-17)."""
 
 from __future__ import annotations
 
@@ -33,7 +26,6 @@ _PAGE_PHRASE = re.compile(r"\bpage\s*\d+(\s*(of|/)\s*\d+)?", re.IGNORECASE)
 
 
 def normalize_encoding(text: str) -> str:
-    """Rule 10: consistent characters, so the same name is always the same string."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = unicodedata.normalize("NFKC", text)
     for curly, straight in _QUOTES.items():
@@ -42,7 +34,6 @@ def normalize_encoding(text: str) -> str:
 
 
 def strip_invisible(text: str) -> str:
-    """Rule 11: drop zero-width and control characters. Keeps newlines and tabs."""
     kept = []
     for ch in text:
         category = unicodedata.category(ch)
@@ -54,17 +45,13 @@ def strip_invisible(text: str) -> str:
     return "".join(kept)
 
 
-# --- Rule 12: headers, footers, page numbers (needs page boundaries) ---
-
 def _line_key(line: str) -> str:
-    """Comparison key: 'Page 3 of 9' and 'Page 4 of 9' count as the same line."""
     key = line.strip().lower()
     key = _PAGE_PHRASE.sub("page #", key)
     return "#" if key.isdigit() else key
 
 
 def _edge_indexes(lines: list[str]) -> set[int]:
-    """Indexes of the lines at the top and bottom of a page (headers and footers live here)."""
     filled = [i for i, ln in enumerate(lines) if ln.strip()]
     top = filled[: config.HEADER_LINES]
     bottom = filled[max(0, len(filled) - config.FOOTER_LINES):]
@@ -72,11 +59,6 @@ def _edge_indexes(lines: list[str]) -> set[int]:
 
 
 def remove_page_furniture(pages: list[str]) -> list[str]:
-    """Rule 12: drop lines at page edges that repeat on most pages, and bare page numbers.
-
-    Only page-edge lines are ever removed, so a repeated line in the middle of a page is safe.
-    Repeat detection needs MIN_PAGES_FOR_FURNITURE pages; with fewer, only bare page numbers go.
-    """
     if len(pages) < 2:
         return pages
 
@@ -102,8 +84,6 @@ def remove_page_furniture(pages: list[str]) -> list[str]:
 
 
 def join_pages(pages: list[str]) -> str:
-    """Join pages. If the previous page ended a sentence, keep a paragraph break;
-    otherwise the sentence continues, and rule 13 will stitch it together."""
     out = ""
     for page in pages:
         page = page.strip("\n")
@@ -115,10 +95,7 @@ def join_pages(pages: list[str]) -> str:
     return out
 
 
-# --- Rules 13-15 ---
-
 def drop_junk_sections(text: str) -> str:
-    """Rule 15: table of contents, copyright lines, and the references section."""
     text = _TOC_LINE.sub("", text)
     text = _TOC_HEADING.sub("", text)
     text = _COPYRIGHT.sub("", text)
@@ -127,34 +104,22 @@ def drop_junk_sections(text: str) -> str:
         last = None
         for last in _REFERENCES.finditer(text):
             pass
-        # Only cut if the heading sits well into the document, so a document that
-        # merely starts with the word "References" isn't wiped out.
         if last is not None and last.start() > len(text) * 0.3:
             text = text[: last.start()]
     return text
 
 
 def isolate_markdown_headings(text: str) -> str:
-    """Put blank lines around '# Heading' lines, so a heading never merges into the
-    paragraph beside it when single newlines are joined."""
     return re.sub(r"^(#{1,6}[ \t]+.+)$", r"\n\1\n", text, flags=re.MULTILINE)
 
 
 def fix_broken_lines(text: str) -> str:
-    """Rule 13: rejoin hyphenated words and lines broken mid-sentence.
-
-    A single newline becomes a space, EXCEPT before a bullet or numbered-list item, which
-    stays on its own line (rule 17, partly). A blank line is kept, since it marks a paragraph.
-    List markers are 1-2 digits only, so a wrapped line starting with a year ("2023.") still joins.
-    Known limit: a real hyphen at a line end ("well-\\nknown") loses its hyphen.
-    """
     text = re.sub(r"(?<=\w)-\n(?=[a-z])", "", text)
     text = re.sub(r"(?<!\n)\n(?!\n)(?![ \t]*(?:[-*+\u2022][ \t]|\d{1,2}[.)][ \t]))", " ", text)
     return text
 
 
 def collapse_whitespace(text: str) -> str:
-    """Rule 14: tidy spacing but keep blank lines, because they mark paragraphs."""
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -162,13 +127,12 @@ def collapse_whitespace(text: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    """Run every text-level cleaning rule, in order."""
     original_length = len(text.strip())
 
     text = normalize_encoding(text)
     text = strip_invisible(text)
     text = drop_junk_sections(text)
-    text = isolate_markdown_headings(text)      # new line
+    text = isolate_markdown_headings(text)
     text = fix_broken_lines(text)
     text = collapse_whitespace(text)
 
@@ -179,7 +143,6 @@ def clean_text(text: str) -> str:
 
 
 def clean_pages(pages: list[str]) -> str:
-    """Clean a whole document given as a list of pages (rule 12 first, then the rest)."""
     if not pages:
         return ""
     pages = [strip_invisible(normalize_encoding(p)) for p in pages]

@@ -1,5 +1,6 @@
 """One reader per file type (rule 7). Every reader returns a RawDocument:
-prose as a list of pages, plus any tables found (rule 8: text and tables kept apart)."""
+prose as a list of pages, plus any tables found (rule 8: text and tables kept apart).
+"""
 
 from __future__ import annotations
 
@@ -18,17 +19,32 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class RawDocument:
-    pages: list[str] = field(default_factory=list)      # prose, one string per page
+    pages: list[str] = field(default_factory=list)
     tables: list[Table] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any(p.strip() for p in self.pages) and not self.tables
 
 
+# ---------- heading detection (shared with chunker's rule; kept lightweight here) ----------
+
+_HEADING_MAX_WORDS = 8
+
+
+def _looks_like_heading(line: str) -> str | None:
+    line = line.strip()
+    if not line or "\n" in line:
+        return None
+    if line.startswith("#"):
+        return line.lstrip("#").strip() or None
+    if len(line.split()) <= _HEADING_MAX_WORDS and not line.endswith((".", "!", "?", ":", ";", ",")):
+        return line
+    return None
+
+
 # ---------- .txt and .md ----------
 
 def _read_txt(path: Path) -> RawDocument:
-    # utf-8-sig quietly strips an invisible byte-order mark if present
     return RawDocument(pages=[path.read_text(encoding="utf-8-sig", errors="replace")])
 
 
@@ -46,12 +62,16 @@ def _split_md_row(line: str) -> list[str]:
 
 
 def _extract_md_tables(text: str) -> tuple[str, list[Table]]:
-    """Pull '| a | b |' tables out of Markdown text. A 'Table N:' line just above is the caption."""
     lines = text.split("\n")
     out: list[str] = []
     tables: list[Table] = []
+    current_section: str | None = None
     i = 0
     while i < len(lines):
+        heading = _looks_like_heading(lines[i]) if lines[i].strip().startswith("#") else None
+        if heading:
+            current_section = heading
+
         if _MD_ROW.match(lines[i]) and i + 1 < len(lines) and _MD_SEP.match(lines[i + 1]):
             rows = [_split_md_row(lines[i])]
             j = i + 2
@@ -65,7 +85,7 @@ def _extract_md_tables(text: str) -> tuple[str, list[Table]]:
             if k >= 0 and is_caption(out[k]):
                 caption = is_caption(out[k])
                 out = out[:k]
-            tables.append(Table(rows=rows, caption=caption))
+            tables.append(Table(rows=rows, caption=caption, section=current_section))
             out.append("")
             i = j
         else:
@@ -82,8 +102,6 @@ def _read_markdown(path: Path) -> RawDocument:
 # ---------- .pdf ----------
 
 def _pdf_page(page, number: int) -> tuple[str, list[Table]]:
-    """Text of one page with table regions cut out, plus the tables found (rule 8).
-    Only ruled (bordered) tables are detected."""
     try:
         accepted = []
         for t in page.find_tables():
@@ -123,7 +141,7 @@ def _read_pdf(path: Path) -> RawDocument:
             try:
                 text, page_tables = _pdf_page(page, number)
                 images_skipped += len(page.images)
-            except Exception as e:                       # rule 37: one bad page never stops the rest
+            except Exception as e:
                 log.warning("%s: page %d could not be read (%s), skipping", path.name, number, e)
                 bad_pages += 1
                 text, page_tables = "", []
@@ -131,11 +149,11 @@ def _read_pdf(path: Path) -> RawDocument:
             tables.extend(page_tables)
 
     doc = RawDocument(pages=pages, tables=tables)
-    if doc.is_empty():                                   # rule 4: blank or scanned
+    if doc.is_empty():
         log.warning("%s: no extractable text (blank or scanned PDF), skipping", path.name)
         return RawDocument()
 
-    if images_skipped:                                   # rule 30
+    if images_skipped:
         log.info("%s: %d image(s) skipped (figures not supported yet)", path.name, images_skipped)
     if bad_pages:
         log.warning("%s: %d unreadable page(s) skipped", path.name, bad_pages)
@@ -150,7 +168,7 @@ def _docx_rows(table) -> list[list[str]]:
         seen: list = []
         cells: list[str] = []
         for cell in row.cells:
-            duplicate = any(cell._tc is s for s in seen)   # merged cells repeat; keep the first
+            duplicate = any(cell._tc is s for s in seen)
             cells.append("" if duplicate else cell.text)
             seen.append(cell._tc)
         rows.append(cells)
@@ -168,6 +186,7 @@ def _read_docx(path: Path) -> RawDocument:
 
     paragraphs: list[str] = []
     last_style = ""
+    current_section: str | None = None
     tables: list[Table] = []
 
     for child in d.element.body.iterchildren():
@@ -183,6 +202,7 @@ def _read_docx(path: Path) -> RawDocument:
                 last_style = ""
             if last_style.startswith("heading") or last_style == "title":
                 text = "# " + text
+                current_section = p.text.strip()          # gap fix: track current section
             paragraphs.append(text)
         elif tag == "tbl":
             caption = None
@@ -190,7 +210,8 @@ def _read_docx(path: Path) -> RawDocument:
                 caption = is_caption(paragraphs[-1]) or (paragraphs[-1] if last_style == "caption" else None)
                 if caption:
                     paragraphs.pop()
-            tables.append(Table(rows=_docx_rows(DocxTable(child, d)), caption=caption))
+            tables.append(Table(rows=_docx_rows(DocxTable(child, d)), caption=caption,
+                                section=current_section))
 
     return RawDocument(pages=["\n\n".join(paragraphs)], tables=tables)
 
@@ -213,7 +234,7 @@ def _read_xlsx(path: Path) -> RawDocument:
     from openpyxl import load_workbook
 
     try:
-        wb = load_workbook(path, read_only=True, data_only=True)   # data_only: uses cached formula results
+        wb = load_workbook(path, read_only=True, data_only=True)
     except Exception as e:
         raise InvalidFile(f"{path.name}: cannot open Excel file ({e})") from e
 
@@ -241,7 +262,6 @@ _READERS = {
 
 
 def read_document(file_path: str | Path) -> RawDocument:
-    """Read a document into prose pages and tables."""
     path = Path(file_path)
     reader = _READERS.get(path.suffix.lower())
     if reader is None:
