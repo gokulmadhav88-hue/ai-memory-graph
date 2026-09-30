@@ -7,3 +7,5 @@ reportlab
 pdfplumber
 python-docx
 openpyxl
+pytesseract
+PyMuPDF

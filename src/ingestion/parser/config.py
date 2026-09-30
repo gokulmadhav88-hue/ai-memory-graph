@@ -3,7 +3,7 @@
 Bump PARSER_VERSION whenever a change alters the parser's output.
 """
 
-PARSER_VERSION = "0.5.0"
+PARSER_VERSION = "0.6.0"
 
 # --- Input validation (rules 1, 5) ---
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".xlsx"}
@@ -34,3 +34,15 @@ MAX_TABLE_ROWS = 500
 # a table where fewer than this share of non-header cells contain any letters
 # is treated as numeric-heavy: still stored, but flagged (new gap fix)
 MIN_ALPHA_CELL_RATIO_FOR_ENTITIES = 0.3
+
+# --- Tier 3: figures (rules 28-30) ---
+# OFF by default. A plain parse_document(path) call behaves exactly as in Tier 1/2:
+# figures are counted and skipped. Turn on by also passing a describe_image callback.
+ENABLE_FIGURE_DESCRIPTIONS = False
+MAX_FIGURES_PER_DOC = 20          # cost cap: one document can't run up unlimited vision calls
+MIN_IMAGE_SIZE_PX = 50            # skip icons, bullets, dividers
+
+# --- Tier 3: OCR for scanned PDFs (alternative to rule 4's "skip with a warning") ---
+ENABLE_OCR = False                # OFF by default: scanned PDFs are still just skipped
+OCR_RENDER_DPI = 200              # higher = better OCR accuracy, slower, bigger images
+OCR_MIN_CHARS = 20                # below this, treat OCR output as noise, not real text

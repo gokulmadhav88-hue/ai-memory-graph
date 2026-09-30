@@ -18,7 +18,8 @@ class Chunk:
     content_type: str = "text"
     page: int | None = None
     section: str | None = None
-    is_numeric_table: bool = False   # gap fix: flags a table chunk that is mostly numbers
+    is_numeric_table: bool = False   # flags a table chunk that is mostly numbers
+    is_ocr: bool = False             # Tier 3: text came from OCR, lower confidence than real text
 
     def __post_init__(self) -> None:
         if not self.doc_id:

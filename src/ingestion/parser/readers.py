@@ -1,5 +1,6 @@
 """One reader per file type (rule 7). Every reader returns a RawDocument:
-prose as a list of pages, plus any tables found (rule 8: text and tables kept apart).
+prose as a list of pages, plus any tables found (rule 8), plus any figures found
+(Tier 3), plus which pages (if any) came from OCR instead of a real text layer.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import config
+from .figures import FigureRef, ocr_pages
 from .tables import Table, extract_captions, is_caption
 from .validator import InvalidFile, ParserError
 
@@ -21,12 +24,12 @@ log = logging.getLogger(__name__)
 class RawDocument:
     pages: list[str] = field(default_factory=list)
     tables: list[Table] = field(default_factory=list)
+    figures: list[FigureRef] = field(default_factory=list)
+    ocr_pages: set[int] = field(default_factory=set)   # 1-indexed page numbers read via OCR
 
     def is_empty(self) -> bool:
         return not any(p.strip() for p in self.pages) and not self.tables
 
-
-# ---------- heading detection (shared with chunker's rule; kept lightweight here) ----------
 
 _HEADING_MAX_WORDS = 8
 
@@ -123,6 +126,49 @@ def _pdf_page(page, number: int) -> tuple[str, list[Table]]:
         return page.extract_text() or "", []
 
 
+def _pdf_figures(path: Path) -> list[FigureRef]:
+    """Embedded raster images, via PyMuPDF (pdfplumber can count images but not
+    cleanly hand back their bytes). Isolated in its own try/except: if this fails,
+    the document is still readable, it just has no figure descriptions."""
+    try:
+        import pymupdf
+    except Exception as e:
+        log.warning("PyMuPDF not available (%s), skipping figure extraction", e)
+        return []
+
+    figures: list[FigureRef] = []
+    try:
+        with pymupdf.open(path) as doc:
+            for page_number, page in enumerate(doc, start=1):
+                for img in page.get_images(full=True):
+                    xref = img[0]
+                    try:
+                        base = doc.extract_image(xref)
+                    except Exception:
+                        continue
+                    figures.append(FigureRef(
+                        image_bytes=base["image"], page=page_number,
+                        width=base.get("width", 0), height=base.get("height", 0),
+                    ))
+    except Exception as e:
+        log.warning("%s: figure extraction failed (%s), continuing without figures", path.name, e)
+    return figures
+
+
+def _render_pdf_pages(path: Path) -> list[bytes]:
+    """Render each page to a PNG image, for OCR on a scanned/image-only PDF."""
+    import pymupdf
+
+    images: list[bytes] = []
+    with pymupdf.open(path) as doc:
+        zoom = config.OCR_RENDER_DPI / 72
+        matrix = pymupdf.Matrix(zoom, zoom)
+        for page in doc:
+            pix = page.get_pixmap(matrix=matrix)
+            images.append(pix.tobytes("png"))
+    return images
+
+
 def _read_pdf(path: Path) -> RawDocument:
     import pdfplumber
 
@@ -133,14 +179,12 @@ def _read_pdf(path: Path) -> RawDocument:
 
     pages: list[str] = []
     tables: list[Table] = []
-    images_skipped = 0
     bad_pages = 0
 
     with pdf:
         for number, page in enumerate(pdf.pages, start=1):
             try:
                 text, page_tables = _pdf_page(page, number)
-                images_skipped += len(page.images)
             except Exception as e:
                 log.warning("%s: page %d could not be read (%s), skipping", path.name, number, e)
                 bad_pages += 1
@@ -148,13 +192,27 @@ def _read_pdf(path: Path) -> RawDocument:
             pages.append(text)
             tables.extend(page_tables)
 
-    doc = RawDocument(pages=pages, tables=tables)
-    if doc.is_empty():
+    figures = _pdf_figures(path)
+    doc = RawDocument(pages=pages, tables=tables, figures=figures)
+
+    if doc.is_empty():                                   # rule 4: blank or scanned
+        if config.ENABLE_OCR:
+            log.info("%s: no extractable text, running OCR", path.name)
+            rendered = _render_pdf_pages(path)
+            ocr_text = ocr_pages(rendered)
+            kept_pages = [t if len(t.strip()) >= config.OCR_MIN_CHARS else "" for t in ocr_text]
+            if not any(p.strip() for p in kept_pages):
+                log.warning("%s: OCR found no usable text either, skipping", path.name)
+                return RawDocument()
+            return RawDocument(
+                pages=kept_pages,
+                ocr_pages={i + 1 for i, p in enumerate(kept_pages) if p.strip()},
+            )
         log.warning("%s: no extractable text (blank or scanned PDF), skipping", path.name)
         return RawDocument()
 
-    if images_skipped:
-        log.info("%s: %d image(s) skipped (figures not supported yet)", path.name, images_skipped)
+    if figures:
+        log.info("%s: %d figure(s) found", path.name, len(figures))
     if bad_pages:
         log.warning("%s: %d unreadable page(s) skipped", path.name, bad_pages)
     return doc
@@ -173,6 +231,30 @@ def _docx_rows(table) -> list[list[str]]:
             seen.append(cell._tc)
         rows.append(cells)
     return rows
+
+
+def _docx_figures(d) -> list[FigureRef]:
+    """Embedded images live in the document's media parts, unordered relative to text."""
+    figures: list[FigureRef] = []
+    try:
+        for rel in d.part.rels.values():
+            if "image" not in rel.reltype:
+                continue
+            try:
+                blob = rel.target_part.blob
+                width, height = 0, 0
+                try:                                        # dimensions needed for the size filter
+                    from PIL import Image
+                    with Image.open(io.BytesIO(blob)) as im:
+                        width, height = im.size
+                except Exception:
+                    pass                                     # unreadable image bytes; keep it, size filter will just let it through
+                figures.append(FigureRef(image_bytes=blob, width=width, height=height))
+            except Exception:
+                continue
+    except Exception as e:
+        log.warning("figure extraction from .docx failed (%s), continuing without figures", e)
+    return figures
 
 
 def _read_docx(path: Path) -> RawDocument:
@@ -202,7 +284,7 @@ def _read_docx(path: Path) -> RawDocument:
                 last_style = ""
             if last_style.startswith("heading") or last_style == "title":
                 text = "# " + text
-                current_section = p.text.strip()          # gap fix: track current section
+                current_section = p.text.strip()
             paragraphs.append(text)
         elif tag == "tbl":
             caption = None
@@ -213,7 +295,10 @@ def _read_docx(path: Path) -> RawDocument:
             tables.append(Table(rows=_docx_rows(DocxTable(child, d)), caption=caption,
                                 section=current_section))
 
-    return RawDocument(pages=["\n\n".join(paragraphs)], tables=tables)
+    figures = _docx_figures(d)
+    if figures:
+        log.info("%s: %d figure(s) found", path.name, len(figures))
+    return RawDocument(pages=["\n\n".join(paragraphs)], tables=tables, figures=figures)
 
 
 # ---------- .csv and .xlsx (the whole file is a table) ----------
