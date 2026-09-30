@@ -179,3 +179,65 @@ def test_pdf_spanning_table_is_merged_not_split_with_false_header():
     joined_text = " ".join(t.text for t in tables)
     for i in range(10):
         assert f"Model M{i}: Score is {i}." in joined_text
+
+
+# --- Tier 3: figures and OCR ---
+
+def _fake_describer(image_bytes: bytes) -> str:
+    return "A bar chart showing example data."
+
+
+def test_figures_are_skipped_by_default_no_image_chunks(monkeypatch):
+    from src.ingestion.parser import config
+    monkeypatch.setattr(config, "ENABLE_FIGURE_DESCRIPTIONS", False)
+    chunks = parse_document(FIX / "pdf_with_figure.pdf")
+    assert texts_of(chunks, "image_description") == []
+    assert texts_of(chunks, "text")   # the real text is still there
+
+
+def test_figures_are_described_when_enabled_pdf(monkeypatch):
+    from src.ingestion.parser import config
+    monkeypatch.setattr(config, "ENABLE_FIGURE_DESCRIPTIONS", True)
+    chunks = parse_document(FIX / "pdf_with_figure.pdf", describe_image=_fake_describer)
+    images = texts_of(chunks, "image_description")
+    assert len(images) == 1
+    assert "bar chart" in images[0].text
+    assert images[0].page == 1
+
+
+def test_figures_are_described_when_enabled_docx(monkeypatch):
+    from src.ingestion.parser import config
+    monkeypatch.setattr(config, "ENABLE_FIGURE_DESCRIPTIONS", True)
+    chunks = parse_document(FIX / "report_with_figure.docx", describe_image=_fake_describer)
+    images = texts_of(chunks, "image_description")
+    assert len(images) == 1
+    assert "bar chart" in images[0].text
+
+
+def test_no_describer_passed_means_no_image_chunks_even_if_enabled(monkeypatch):
+    from src.ingestion.parser import config
+    monkeypatch.setattr(config, "ENABLE_FIGURE_DESCRIPTIONS", True)
+    chunks = parse_document(FIX / "pdf_with_figure.pdf")   # no describe_image argument
+    assert texts_of(chunks, "image_description") == []
+
+
+def test_scanned_pdf_still_skipped_when_ocr_off():
+    assert parse_document(FIX / "scanned_page.pdf") == []
+
+
+def test_scanned_pdf_read_via_ocr_when_enabled(monkeypatch):
+    from src.ingestion.parser import config
+    monkeypatch.setattr(config, "ENABLE_OCR", True)
+    chunks = parse_document(FIX / "scanned_page.pdf")
+    assert chunks
+    text = joined(chunks)
+    # OCR isn't pixel-perfect (fonts can make "I" read as "l"); check the words OCR
+    # reliably gets right rather than requiring an exact match.
+    assert "released" in text
+    assert "GPT-4" in text or "GPT" in text
+    assert all(c.is_ocr for c in chunks)
+
+
+def test_normal_pdf_chunks_are_not_marked_ocr():
+    chunks = parse_document(FIX / "simple.pdf")
+    assert all(c.is_ocr is False for c in chunks)
