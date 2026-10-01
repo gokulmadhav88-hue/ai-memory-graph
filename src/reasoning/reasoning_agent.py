@@ -30,7 +30,7 @@ from . import validators as V
 from .schemas import (
     AnswerDraft, AnswerState, Claim, ClaimSource, Conflict, ConflictKind,
     MissingItem, NormalizedEvidence, QuestionProfile, ReasoningStep, SchemaError,
-    SubQuestion, TriageEntry, VerificationStatus,
+    SubQuestion, TemporalCheck, TriageEntry, VerificationStatus,
 )
 
 log = logging.getLogger("reasoning")
@@ -50,6 +50,9 @@ class ReasoningConfig:
     answer_max_tokens: int = 2000
     repair_attempts: int = 1         # repair tries after a failed validation
     verify_claims: bool = False      # external verification of graph claims (opt-in)
+    max_evidence_items: int = 30     # size budget for internal evidence shown to the model
+    max_evidence_chars: int = 24000  # roughly 6k tokens; lower-ranked items are dropped
+    strict_grounding: bool = False   # True: a date/number missing from the cited evidence forces a repair
 
 
 class _StepFailed(Exception):
@@ -107,6 +110,7 @@ def _parse_output(raw: dict) -> dict:
         "reasoning_steps": [ReasoningStep.from_dict(s) for s in _list(raw, "reasoning_steps")],
         "conflicts": [Conflict.from_dict(c) for c in _list(raw, "conflicts")],
         "missing_items": [MissingItem.from_dict(m) for m in _list(raw, "missing_items")],
+        "temporal_checks": [TemporalCheck.from_dict(t) for t in _list(raw, "temporal_checks")],
         "sub_questions": [SubQuestion.from_dict(s) for s in _list(raw, "sub_questions")],
         "triage": [TriageEntry.from_dict(t) for t in _list(raw, "triage")],
         "assumptions": assumptions,
@@ -156,13 +160,15 @@ def _derive_state(draft: AnswerDraft) -> tuple[AnswerState, bool]:
 
 
 def _assemble(profile: QuestionProfile, parsed: dict, ev_full: NormalizedEvidence,
-              web_items: list, allow_external: bool, base_warnings: list[str]):
+              web_items: list, allow_external: bool, base_warnings: list[str],
+              strict_values: bool = False):
     """Build a complete AnswerDraft from parsed model output, computing the
     derived fields in code, and validate it. Returns (draft, issues)."""
     draft = AnswerDraft(
         answer_text=parsed["answer_text"],
         claims=parsed["claims"], reasoning_steps=parsed["reasoning_steps"],
         conflicts=parsed["conflicts"], missing_items=parsed["missing_items"],
+        temporal_checks=parsed.get("temporal_checks", []),
         sub_questions=parsed["sub_questions"] or profile.sub_questions,
         triage=parsed["triage"],
         assumptions=_dedupe(profile.assumptions + parsed["assumptions"]),
@@ -193,7 +199,8 @@ def _assemble(profile: QuestionProfile, parsed: dict, ev_full: NormalizedEvidenc
         draft.missing_info = ("not found in the uploaded documents (supplied from external sources): "
                               + "; ".join(c.text for c in draft.claims if c.source == ClaimSource.WEB))
 
-    issues = V.validate_draft(draft, ev_full, allow_external=allow_external)
+    issues = V.validate_draft(draft, ev_full, allow_external=allow_external,
+                              strict_values=strict_values)
     draft.confidence = V.compute_confidence(draft, ev_full, issues)
     for i in issues:
         if i.severity == V.WARNING and f"{i.code}: {i.message}" not in draft.warnings:
@@ -209,7 +216,8 @@ def _generate(llm, prompt_pair, profile, ev_full, web_items, allow_external,
     for attempt in range(cfg.repair_attempts + 1):
         try:
             parsed = _parse_output(raw)
-            draft, issues = _assemble(profile, parsed, ev_full, web_items, allow_external, base_warnings)
+            draft, issues = _assemble(profile, parsed, ev_full, web_items, allow_external, base_warnings,
+                                      cfg.strict_grounding)
             if not V.has_errors(issues):
                 return draft, parsed
             problem = V.format_issues([i for i in issues if i.severity == V.ERROR])
@@ -316,7 +324,12 @@ def write_answer(question: str, evidence, *, llm=None, search: Callable[[str], l
     """
     cfg = config or ReasoningConfig()
     ev = evidence if isinstance(evidence, NormalizedEvidence) else NormalizedEvidence.from_bundle(evidence)
+    ev = V.trim_evidence(ev, cfg.max_evidence_items, cfg.max_evidence_chars, cfg.max_item_chars)
     warnings: list[str] = list(ev.warnings)
+    if ev.omitted_ids:
+        shown = ", ".join(ev.omitted_ids[:10]) + (" ..." if len(ev.omitted_ids) > 10 else "")
+        warnings.append(f"{len(ev.omitted_ids)} lower-ranked evidence items were not shown to the model "
+                        f"(size budget): {shown}")
     if ev.was_filtered:
         warnings.append("retrieval filtered some results; relevant evidence may be missing")
 
@@ -339,7 +352,7 @@ def write_answer(question: str, evidence, *, llm=None, search: Callable[[str], l
     else:
         try:
             pair = prompts.answer_prompt(profile, ev.items, critic_feedback, cfg.max_item_chars,
-                                         ev.was_filtered, ev.notes)
+                                         ev.was_filtered, ev.notes, len(ev.omitted_ids))
             internal, internal_parsed = _generate(llm, pair, profile, ev, [], False, warnings, cfg)
         except _StepFailed as e:
             warnings.append(f"internal answer step failed: {e}")

@@ -283,6 +283,7 @@ class NormalizedEvidence:
     route_used: str = ""
     notes: str | None = None
     warnings: list[str] = field(default_factory=list)  # items skipped, etc.
+    omitted_ids: list[str] = field(default_factory=list)  # dropped by the size budget (not shown to the model)
 
     # ---- lookups ----
     def ids(self) -> set[str]:
@@ -536,6 +537,26 @@ class MissingItem:
                    description=_require(d, "description", "MissingItem"))
 
 
+@dataclass
+class TemporalCheck:
+    """The model's statement about the ORDER of two dated events (rule 21).
+    The model only names the two evidence items; CODE compares the dates found in
+    them, so date ordering is never decided by the model alone."""
+    statement: str
+    earlier_id: str   # evidence id of the event claimed to happen first
+    later_id: str     # evidence id of the event claimed to happen later
+
+    def to_dict(self) -> dict:
+        return _to_plain(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TemporalCheck":
+        d = _require_dict(data, "TemporalCheck")
+        return cls(statement=_require(d, "statement", "TemporalCheck"),
+                   earlier_id=_require(d, "earlier_id", "TemporalCheck"),
+                   later_id=_require(d, "later_id", "TemporalCheck"))
+
+
 # ---------------------------------------------------------------------------
 # AnswerDraft: contract fields kept + new optional fields
 # ---------------------------------------------------------------------------
@@ -555,6 +576,7 @@ class AnswerDraft:
     reasoning_steps: list[ReasoningStep] = field(default_factory=list)
     conflicts: list[Conflict] = field(default_factory=list)
     missing_items: list[MissingItem] = field(default_factory=list)
+    temporal_checks: list[TemporalCheck] = field(default_factory=list)   # rule 21
     sub_questions: list[SubQuestion] = field(default_factory=list)
     triage: list[TriageEntry] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)   # rule 2 (typo interpretation, etc.)
@@ -580,6 +602,8 @@ class AnswerDraft:
         for cf in self.conflicts:
             ids.update(cf.side_a_ids)
             ids.update(cf.side_b_ids)
+        for tc in self.temporal_checks:
+            ids.update((tc.earlier_id, tc.later_id))
         return ids
 
     def to_dict(self) -> dict:
@@ -600,6 +624,7 @@ class AnswerDraft:
             reasoning_steps=[ReasoningStep.from_dict(s) for s in d.get("reasoning_steps") or []],
             conflicts=[Conflict.from_dict(c) for c in d.get("conflicts") or []],
             missing_items=[MissingItem.from_dict(m) for m in d.get("missing_items") or []],
+            temporal_checks=[TemporalCheck.from_dict(t) for t in d.get("temporal_checks") or []],
             sub_questions=[SubQuestion.from_dict(s) for s in d.get("sub_questions") or []],
             triage=[TriageEntry.from_dict(t) for t in d.get("triage") or []],
             assumptions=_str_list(d.get("assumptions"), "AnswerDraft.assumptions"),
@@ -614,5 +639,5 @@ __all__ = [
     "SchemaError", "EvidenceKind", "ClaimSource", "ClaimKind", "AnswerState", "QuestionType",
     "Relevance", "SubQuestionStatus", "VerificationStatus", "ConflictKind",
     "EvidenceItem", "NormalizedEvidence", "SubQuestion", "QuestionProfile", "TriageEntry",
-    "Claim", "ReasoningStep", "Conflict", "MissingItem", "AnswerDraft",
+    "Claim", "ReasoningStep", "Conflict", "MissingItem", "TemporalCheck", "AnswerDraft",
 ]

@@ -10,6 +10,9 @@ What lives here (rule numbers refer to the 45-rule list):
   * search_gate      - decides if web search is allowed at all (rules 27-28)
   * sanitize_query / query_leaks_evidence - keep private text out of searches (28)
   * date + number helpers - deterministic comparison in code, not by the LLM (21-22)
+  * claim grounding   - dates/numbers in explicit claims must appear in the cited evidence
+  * temporal checks   - the model names two events, code verifies their order from the dates
+  * trim_evidence     - size budget so a big bundle cannot overflow the model's context
   * compute_confidence - confidence from checkable signals (rule 39)
 
 Convention: `evidence_sufficient` means "the INTERNAL evidence was sufficient".
@@ -23,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from .schemas import (
-    AnswerDraft, AnswerState, ClaimSource, ConflictKind, EvidenceKind,
+    AnswerDraft, AnswerState, ClaimKind, ClaimSource, ConflictKind, EvidenceKind,
     NormalizedEvidence, VerificationStatus,
 )
 
@@ -72,8 +75,11 @@ def _kind_of(evidence_id: str, evidence: NormalizedEvidence, draft: AnswerDraft)
 
 
 def validate_draft(draft: AnswerDraft, evidence: NormalizedEvidence, *,
-                   allow_external: bool = False) -> list[Issue]:
-    """Return every problem found. Empty list (or warnings only) means usable."""
+                   allow_external: bool = False, strict_values: bool = False) -> list[Issue]:
+    """Return every problem found. Empty list (or warnings only) means usable.
+
+    strict_values: if True, dates/numbers in explicit claims that are missing from the cited
+    evidence are ERRORS (they trigger a repair); otherwise they are WARNINGS."""
     issues: list[Issue] = []
     add = lambda code, msg, sev=ERROR, rule=None, ids=None: issues.append(
         Issue(code, msg, sev, rule, ids or []))
@@ -131,6 +137,9 @@ def validate_draft(draft: AnswerDraft, evidence: NormalizedEvidence, *,
         if c.kind.value == "derived" and not draft.reasoning_steps:
             add("derived_without_steps", f"claim {c.claim_id} is derived but there are no reasoning steps",
                 WARNING, rule=16, ids=[c.claim_id])
+
+    issues.extend(_check_claim_values(draft, evidence, ERROR if strict_values else WARNING))
+    issues.extend(_check_temporal(draft, evidence))
 
     srcs = {c.source for c in draft.claims}
     has_graph_claim = ClaimSource.GRAPH in srcs
@@ -363,8 +372,8 @@ class PartialDate:
         return d, d
 
 
-def extract_dates(text: str) -> list[PartialDate]:
-    """All dates in `text`, in order of appearance. Invalid dates are skipped."""
+def _scan_dates(text: str) -> tuple[list[tuple[int, PartialDate]], list[tuple[int, int]]]:
+    """Return (found dates with positions, every consumed span incl. invalid dates)."""
     found: list[tuple[int, PartialDate]] = []
     used: list[tuple[int, int]] = []
     for kind, pat in _DATE_PATTERNS:
@@ -390,7 +399,23 @@ def extract_dates(text: str) -> list[PartialDate]:
                 continue
             used.append((m.start(), m.end()))
             found.append((m.start(), pd))
+    return found, used
+
+
+def extract_dates(text: str) -> list[PartialDate]:
+    """All dates in `text`, in order of appearance. Invalid dates are skipped."""
+    found, _ = _scan_dates(text)
     return [pd for _, pd in sorted(found, key=lambda x: x[0])]
+
+
+def strip_dates(text: str) -> str:
+    """Blank out every date-like span so its digits are not mistaken for plain numbers."""
+    _, used = _scan_dates(text)
+    chars = list(text)
+    for start, end in used:
+        for i in range(start, end):
+            chars[i] = " "
+    return "".join(chars)
 
 
 def parse_date(text: str) -> PartialDate | None:
@@ -409,6 +434,14 @@ def compare_dates(a: PartialDate, b: PartialDate) -> str:
     if a0 > b1:
         return "after"
     return "overlap"
+
+
+def date_supported(claim_date: PartialDate, evidence_dates: list[PartialDate]) -> bool:
+    """A date in a claim is supported if some evidence date lies INSIDE it: the claim may be
+    less specific than the evidence ('2023' for '14 March 2023') but never more specific
+    ('14 March 2023' for '2023' would invent precision)."""
+    c0, c1 = claim_date.as_range()
+    return any(c0 <= e0 and e1 <= c1 for e0, e1 in (e.as_range() for e in evidence_dates))
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +474,136 @@ def numbers_match(a: float, b: float, rel_tol: float = 1e-6) -> bool:
     return math.isclose(a, b, rel_tol=rel_tol, abs_tol=1e-12)
 
 
+_NUM_TOKEN = re.compile(
+    r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?:\s*(?:%|(?:million|billion|trillion|thousand|bn|k|m|b)\b))?", re.I)
+
+
+def extract_numbers(text: str, strip: bool = True) -> list[float]:
+    """Numeric values in `text` ('1,500,000', '1.5 million', '40%'). Inline citations like
+    [E1] are ignored; with strip=True dates are blanked first so '14 March 2023' is not
+    read as the numbers 14 and 2023."""
+    text = _INLINE_CITATION.sub(" ", text)
+    if strip:
+        text = strip_dates(text)
+    values = []
+    for m in _NUM_TOKEN.finditer(text):
+        v = parse_number(m.group(0).strip().rstrip(","))
+        if v is not None:
+            values.append(v)
+    return values
+
+
+# ---------------------------------------------------------------------------
+# Claim grounding: dates and numbers must come from the cited evidence (rules 14, 21, 22)
+# ---------------------------------------------------------------------------
+
+GROUNDING_CODES = {"claim_date_not_in_evidence", "claim_number_not_in_evidence"}
+
+
+def _find_item(evidence_id: str, evidence: NormalizedEvidence, draft: AnswerDraft):
+    item = evidence.get(evidence_id)
+    if item is not None:
+        return item
+    return next((w for w in draft.web_evidence if w.evidence_id == evidence_id), None)
+
+
+def _fmt_date(d: PartialDate) -> str:
+    return "-".join(str(x) for x in (d.year, d.month, d.day) if x is not None)
+
+
+def _check_claim_values(draft: AnswerDraft, evidence: NormalizedEvidence, severity: str) -> list[Issue]:
+    """Explicit claims may only state dates and numbers that appear in their cited evidence.
+    Derived claims are skipped: they may legitimately contain computed values."""
+    issues: list[Issue] = []
+    for c in draft.claims:
+        if c.kind != ClaimKind.EXPLICIT or c.source == ClaimSource.UNSUPPORTED or not c.evidence_ids:
+            continue
+        texts = [it.text for e in c.evidence_ids if (it := _find_item(e, evidence, draft))]
+        if not texts:
+            continue
+        ev_dates = [d for t in texts for d in extract_dates(t)]
+        ev_nums = [n for t in texts for n in extract_numbers(t)]
+        ev_nums_raw = [n for t in texts for n in extract_numbers(t, strip=False)]
+        claim_text = _INLINE_CITATION.sub(" ", c.text)
+        for d in extract_dates(claim_text):
+            year_as_number = d.month is None and any(numbers_match(float(d.year), n) for n in ev_nums_raw)
+            if not (date_supported(d, ev_dates) or year_as_number):
+                issues.append(Issue("claim_date_not_in_evidence",
+                                    f"claim {c.claim_id} states date {_fmt_date(d)} that is not in its cited evidence",
+                                    severity, 21, [c.claim_id]))
+        for n in extract_numbers(claim_text):
+            if not any(numbers_match(n, e) for e in ev_nums):
+                issues.append(Issue("claim_number_not_in_evidence",
+                                    f"claim {c.claim_id} states number {n:g} that is not in its cited evidence",
+                                    severity, 22, [c.claim_id]))
+    return issues
+
+
+def _check_temporal(draft: AnswerDraft, evidence: NormalizedEvidence) -> list[Issue]:
+    """Verify the model's before/after statements against the dates in the cited evidence."""
+    issues: list[Issue] = []
+    for tc in draft.temporal_checks:
+        first, second = (_find_item(tc.earlier_id, evidence, draft), _find_item(tc.later_id, evidence, draft))
+        if first is None or second is None:
+            continue   # unknown ids are already reported as unknown_evidence_id
+        a, b = extract_dates(first.text), extract_dates(second.text)
+        if not a or not b:
+            issues.append(Issue("temporal_order_unverifiable",
+                                f"no date found to verify: '{tc.statement}'", WARNING, 21,
+                                [tc.earlier_id, tc.later_id]))
+            continue
+        outcomes = {compare_dates(x, y) for x in a for y in b}
+        if outcomes == {"before"}:
+            continue
+        if outcomes == {"after"}:
+            issues.append(Issue("temporal_order_wrong",
+                                f"evidence dates show the opposite order: '{tc.statement}' "
+                                f"({tc.earlier_id} is not earlier than {tc.later_id})", ERROR, 21,
+                                [tc.earlier_id, tc.later_id]))
+        else:
+            issues.append(Issue("temporal_order_unverifiable",
+                                f"dates are equal, overlapping or mixed, so the order cannot be "
+                                f"confirmed: '{tc.statement}'", WARNING, 21, [tc.earlier_id, tc.later_id]))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Evidence size budget (rule 45)
+# ---------------------------------------------------------------------------
+
+def trim_evidence(evidence: NormalizedEvidence, max_items: int = 30, max_chars: int = 24000,
+                  max_item_chars: int = 1500) -> NormalizedEvidence:
+    """Keep the most useful internal evidence within a size budget.
+
+    Ranking: graph facts first (short and structured), then chunks by retrieval score
+    (highest first). Stops at the first item that no longer fits, so a lower-ranked item
+    never beats a higher-ranked one. Always keeps at least one item. Dropped ids go to
+    `omitted_ids` (the agent warns, tells the model, and lowers confidence).
+    Returns the SAME object when nothing needs trimming. Web items are never trimmed."""
+    max_items = max(1, max_items)
+    internal = [i for i in evidence.items if i.is_internal]
+    cost = lambda it: min(len(it.text), max_item_chars)
+    if len(internal) <= max_items and sum(cost(i) for i in internal) <= max_chars:
+        return evidence
+
+    ranked = sorted(enumerate(internal),
+                    key=lambda p: (0 if p[1].kind == EvidenceKind.GRAPH_FACT else 1,
+                                   -(p[1].score or 0.0), p[0]))
+    keep: set[int] = set()
+    used = 0
+    for idx, it in ranked:
+        if len(keep) >= max_items or (keep and used + cost(it) > max_chars):
+            break
+        keep.add(idx)
+        used += cost(it)
+
+    kept = [it for idx, it in enumerate(internal) if idx in keep]
+    omitted = [it.evidence_id for idx, it in enumerate(internal) if idx not in keep]
+    web = [i for i in evidence.items if not i.is_internal]
+    return dataclasses.replace(evidence, items=kept + web,
+                               omitted_ids=list(evidence.omitted_ids) + omitted)
+
+
 # ---------------------------------------------------------------------------
 # Confidence from checkable signals (rule 39)
 # ---------------------------------------------------------------------------
@@ -460,7 +623,8 @@ def compute_confidence(draft: AnswerDraft, evidence: NormalizedEvidence,
        * scale by the share of claims whose cited ids all exist
        * -0.10 x share of derived (inferred) claims
        * -0.15 if any internal contradiction
-       * -0.05 if the retrieval bundle was filtered
+       * -0.05 if the retrieval bundle was filtered or evidence was cut by the size budget
+       * -0.10 if an explicit claim states a date/number missing from its cited evidence
        * -0.05 per missing item (max -0.20)
        * no claims -> at most 0.10; any validation error -> at most 0.20"""
     if draft.state is None:
@@ -476,8 +640,10 @@ def compute_confidence(draft: AnswerDraft, evidence: NormalizedEvidence,
         score -= 0.10 * derived / len(draft.claims)
     if any(x.kind == ConflictKind.INTERNAL for x in draft.conflicts):
         score -= 0.15
-    if evidence.was_filtered:
+    if evidence.was_filtered or evidence.omitted_ids:
         score -= 0.05
+    if issues and any(i.code in GROUNDING_CODES for i in issues):
+        score -= 0.10
     score -= min(0.20, 0.05 * len(draft.missing_items))
     if issues and has_errors(issues):
         score = min(score, 0.20)
