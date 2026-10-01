@@ -1,11 +1,11 @@
 # Placeholder dependency list for the AI memory graph project.
-# Replace with actual project dependencies as implementation begins.
+# Replace with actual project dependencies as implementation begins. pip install openai
 
 pytest
-pytest
-reportlab
 pdfplumber
 python-docx
 openpyxl
 pytesseract
 PyMuPDF
+reportlab
+Pillow
