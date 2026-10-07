@@ -13,3 +13,8 @@ htmlcov/
 **/.ipynb_checkpoints/
 tests/fixtures/too_large.txt
 scratch_run.py
+
+.test-deps/
+data/memory_store.json
+data/memory_store.json.tmp
+.agent-test-tmp*/
