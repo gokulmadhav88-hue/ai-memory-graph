@@ -26,3 +26,5 @@ This is intentionally a placeholder project so it can be pushed to GitHub and it
 3. Connect Neo4j and Chroma
 4. Replace placeholder code with production logic
 5. Run evaluation and refine the system
+
+# reasoning_test -195, parser_tests -86
