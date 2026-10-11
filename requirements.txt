@@ -2,6 +2,7 @@
 # Replace with actual project dependencies as implementation begins. pip install openai
 
 pytest
+chromadb
 pdfplumber
 python-docx
 openpyxl
