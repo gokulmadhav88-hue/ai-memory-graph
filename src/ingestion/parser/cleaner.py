@@ -95,12 +95,13 @@ def join_pages(pages: list[str]) -> str:
     return out
 
 
-def drop_junk_sections(text: str) -> str:
+def drop_junk_sections(text: str, *, cut_references: bool | None = None) -> str:
     text = _TOC_LINE.sub("", text)
     text = _TOC_HEADING.sub("", text)
     text = _COPYRIGHT.sub("", text)
 
-    if config.CUT_REFERENCES:
+    should_cut = config.CUT_REFERENCES if cut_references is None else cut_references
+    if should_cut:
         last = None
         for last in _REFERENCES.finditer(text):
             pass
@@ -126,12 +127,12 @@ def collapse_whitespace(text: str) -> str:
     return text.strip()
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, *, cut_references: bool | None = None) -> str:
     original_length = len(text.strip())
 
     text = normalize_encoding(text)
     text = strip_invisible(text)
-    text = drop_junk_sections(text)
+    text = drop_junk_sections(text, cut_references=cut_references)
     text = isolate_markdown_headings(text)
     text = fix_broken_lines(text)
     text = collapse_whitespace(text)
@@ -148,3 +149,20 @@ def clean_pages(pages: list[str]) -> str:
     pages = [strip_invisible(normalize_encoding(p)) for p in pages]
     pages = remove_page_furniture(pages)
     return clean_text(join_pages(pages))
+
+
+def clean_page_texts(pages: list[str]) -> list[str]:
+    """Apply document cleaning without losing PDF page boundaries."""
+    pages = remove_page_furniture([strip_invisible(normalize_encoding(page)) for page in pages])
+    if config.CUT_REFERENCES:
+        joined = "\n\n".join(pages)
+        matches = list(_REFERENCES.finditer(joined))
+        if matches and matches[-1].start() > len(joined) * 0.3:
+            cutoff = matches[-1].start()
+            cursor = 0
+            trimmed = []
+            for page in pages:
+                trimmed.append(page[:max(0, cutoff - cursor)])
+                cursor += len(page) + 2
+            pages = trimmed
+    return [clean_text(page, cut_references=False) for page in pages]

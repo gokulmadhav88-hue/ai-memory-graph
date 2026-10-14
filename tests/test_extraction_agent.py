@@ -41,6 +41,28 @@ def test_conversation_metadata():
     note = agent.extract_conversation([{'role': 'user', 'content': 'Atlas is managed by Maya.', 'timestamp': '2026-10-01T00:00:00Z'}], 'chat')[0]
     assert note.source_type == 'conversation' and note.source_time.endswith('Z')
 
-def test_unconfigured_client_explicit_error():
+def test_unconfigured_client_explicit_error(monkeypatch):
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.delenv('LLM_FAKE', raising=False)
+    monkeypatch.setenv('LLM_PROVIDER', 'openai')
     with pytest.raises(ExtractionError, match='not configured'):
         ExtractionAgent().extract('Useful text', 'doc')
+
+
+def test_duplicate_entity_names_are_repaired():
+    bad = output()
+    bad['entities'].append(deepcopy(bad['entities'][0]))
+    result = ExtractionAgent(FakeLLM([bad, output()])).extract('Atlas is managed by Maya.', 'doc')
+    assert len(result.entities) == 2
+
+
+def test_malformed_relation_endpoint_has_typed_error():
+    bad = output()
+    bad['relations'][0]['subject'] = ['Atlas']
+    with pytest.raises(ExtractionError, match='Invalid relation'):
+        ExtractionAgent.validate(bad, 'Atlas is managed by Maya.')
+
+
+def test_invalid_conversation_turn_has_typed_error():
+    with pytest.raises(ExtractionError, match='turns must be objects'):
+        ExtractionAgent().extract_conversation(['bad turn'], 'chat')

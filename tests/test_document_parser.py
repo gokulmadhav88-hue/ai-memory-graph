@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -225,6 +226,7 @@ def test_scanned_pdf_still_skipped_when_ocr_off():
     assert parse_document(FIX / "scanned_page.pdf") == []
 
 
+@pytest.mark.skipif(shutil.which('tesseract') is None, reason='Optional Tesseract OCR engine is not installed')
 def test_scanned_pdf_read_via_ocr_when_enabled(monkeypatch):
     from src.ingestion.parser import config
     monkeypatch.setattr(config, "ENABLE_OCR", True)

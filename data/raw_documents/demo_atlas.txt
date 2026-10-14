@@ -1,0 +1,3 @@
+Atlas is managed by Maya.
+
+Atlas is a document search project. The team combines document parsing, structured extraction, graph storage, semantic retrieval, evidence-based reasoning, and answer review. Maya coordinates the integration work and source verification.

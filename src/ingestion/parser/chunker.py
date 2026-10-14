@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 _SENTENCE_END = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9"\'(\[])')
 _URL = re.compile(r"https?://\S+|www\.\S+")
 _HEADING_MAX_WORDS = 8
+_HEADING_CONNECTORS = {"and", "or", "of", "the", "for", "in", "to", "a", "an", "on", "with"}
 
 
 @dataclass
@@ -54,8 +55,13 @@ def heading_text(paragraph: str) -> str | None:
         return None
     if line.startswith("#"):
         return line.lstrip("#").strip() or None
-    if len(line.split()) <= _HEADING_MAX_WORDS and not line.endswith((".", "!", "?", ":", ";", ",")):
-        return line
+    words = line.split()
+    if len(words) <= _HEADING_MAX_WORDS and not line.endswith((".", "!", "?", ":", ";", ",")):
+        # Short unpunctuated assertions must remain evidence. Only infer a plain
+        # heading when every substantive word looks like a title or acronym.
+        substantive = [word for word in words if word.casefold() not in _HEADING_CONNECTORS]
+        if substantive and all(word[0].isupper() for word in substantive):
+            return line
     return None
 
 
@@ -126,14 +132,14 @@ def add_overlap(pieces: list[Piece]) -> list[Piece]:
         text = piece.text
         if i > 0 and pieces[i - 1].section == piece.section:
             tail = split_sentences(pieces[i - 1].text)[-config.OVERLAP_SENTENCES:]
-            if tail:
+            if tail and _words(" ".join(tail)) + _words(text) <= config.MAX_CHUNK_WORDS:
                 text = " ".join(tail) + " " + piece.text
         result.append(Piece(text, piece.section))
     return result
 
 
-def chunk_text(text: str) -> list[Piece]:
-    section: str | None = None
+def chunk_text(text: str, initial_section: str | None = None) -> list[Piece]:
+    section: str | None = initial_section
     units: list[Piece] = []
     seen: list[str] = []
     dropped_junk = dropped_dup = 0

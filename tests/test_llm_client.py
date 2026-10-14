@@ -130,7 +130,8 @@ def test_provider_exceptions_become_llm_error():
     scripted([ConnectionError("network down")])
     with pytest.raises(LLMError) as e:
         client().complete("p")
-    assert "network down" in str(e.value)
+    assert "ConnectionError" in str(e.value)
+    assert "network down" not in str(e.value)
 
 
 def test_unknown_provider_and_empty_prompt():

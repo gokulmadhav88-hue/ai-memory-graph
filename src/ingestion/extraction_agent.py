@@ -77,9 +77,11 @@ class ExtractionAgent:
         for e in raw['entities']:
             if not isinstance(e, dict) or not isinstance(e.get('name'), str) or not e['name'].strip() or e.get('type') not in ENTITY_TYPES:
                 raise ExtractionError('Invalid entity')
+            if e['name'] in names:
+                raise ExtractionError('Entity names must be unique within a note')
             names.add(e['name'])
         for r in raw['relations']:
-            if not isinstance(r, dict) or r.get('subject') not in names or r.get('object') not in names or not re.fullmatch(r'[a-z][a-z0-9_]*', str(r.get('relation', ''))):
+            if not isinstance(r, dict) or not isinstance(r.get('subject'), str) or not isinstance(r.get('object'), str) or r.get('subject') not in names or r.get('object') not in names or not re.fullmatch(r'[a-z][a-z0-9_]*', str(r.get('relation', ''))):
                 raise ExtractionError('Invalid relation')
             q = r.get('evidence_quote')
             if not isinstance(q, str) or not q.strip() or q not in text:
@@ -149,6 +151,8 @@ class ExtractionAgent:
     def extract_conversation(self, turns, conversation_id):
         notes = []
         for i, turn in enumerate(turns):
+            if not isinstance(turn, dict):
+                raise ExtractionError('Conversation turns must be objects')
             if turn.get('role') not in {'user', 'assistant'}:
                 continue
             if not isinstance(turn.get('content'), str):

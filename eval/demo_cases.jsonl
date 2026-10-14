@@ -1,0 +1,2 @@
+{"question":"Who manages Atlas?","expected_terms":["Maya"],"expected_doc_ids":["demo_atlas"],"expect_insufficient":false}
+{"question":"What is the capital of Peru?","expected_terms":[],"expected_doc_ids":[],"expect_insufficient":true}

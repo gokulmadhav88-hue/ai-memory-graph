@@ -18,6 +18,7 @@ then vector chunks (hybrid), with no rank fusion.
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from typing import Any
 
@@ -32,6 +33,7 @@ GRAPH_DEPTH = 2
 # open decision), so treat 0.25 as a starting value to tune once a model is chosen.
 MIN_CHUNK_SCORE = 0.25
 MAX_GRAPH_FACTS = 20
+MAX_TOP_K = 100
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +49,7 @@ def _clean_plan(plan: Any) -> tuple[dict, list[str]]:
     original = original.strip() if isinstance(original, str) else ""
     rewritten = plan.get("rewritten_query")
     rewritten = rewritten.strip() if isinstance(rewritten, str) else ""
-    query_text = rewritten or original
+    query_text = (rewritten or original)[:2000]
     route = plan.get("route")
     route = route.strip().lower() if isinstance(route, str) else ""
     if route not in VALID_ROUTES:
@@ -58,8 +60,10 @@ def _clean_plan(plan: Any) -> tuple[dict, list[str]]:
         raw_entities = [raw_entities]
     entities: list[str] = []
     for e in raw_entities if isinstance(raw_entities, list) else []:
-        if isinstance(e, str) and e.strip() and e.strip() not in entities:
+        if isinstance(e, str) and e.strip() and e.strip().casefold() not in {n.casefold() for n in entities}:
             entities.append(e.strip())
+            if len(entities) == 10:
+                break
     return {"query": query_text, "route": route, "entities": entities}, notes
 
 
@@ -81,8 +85,11 @@ def _default_graph_store() -> Any | None:
         return None
     try:
         instance = cls()
+        connect = getattr(instance, "connect", None)
+        if callable(connect):
+            connect()
     except Exception as e:                      # noqa: BLE001
-        logger.warning("Neo4jStore() failed: %s", e)
+        logger.warning("Neo4jStore connection failed: %s", e)
         return None
     return instance if hasattr(instance, "query_subgraph") else None
 
@@ -91,17 +98,19 @@ def _fold(s: str) -> str:
     return "".join(ch for ch in s.casefold() if ch.isalnum())
 
 
-def _subgraph_to_facts(subgraph: Any, targets: list[str]) -> tuple[list[dict], bool]:
+def _subgraph_to_facts(subgraph: Any, targets: list[str], *, graph_depth: int = GRAPH_DEPTH,
+                       max_graph_facts: int = MAX_GRAPH_FACTS) -> tuple[list[dict], bool]:
     """Subgraph -> (candidate facts ordered by hop distance, dropped_any).
 
     Noise filtering here: drop dangling edges, duplicates, and edges not reachable
-    from a target entity within GRAPH_DEPTH hops; cap at MAX_GRAPH_FACTS (nearest first).
-    If no target matches any node name/alias, hop filtering is skipped (nothing to anchor on).
+    from a target entity within graph_depth hops; cap at max_graph_facts (nearest first).
+    If the targets do not match any name/alias, no returned edge is trusted as relevant.
     """
     if not isinstance(subgraph, dict):
         return [], False
     nodes = {n["node_id"]: n for n in subgraph.get("nodes") or []
-             if isinstance(n, dict) and n.get("node_id") and n.get("name")}
+             if isinstance(n, dict) and isinstance(n.get("node_id"), str) and n["node_id"]
+             and isinstance(n.get("name"), str) and n["name"].strip()}
     edges = [e for e in subgraph.get("edges") or [] if isinstance(e, dict)]
     dropped = False
 
@@ -117,6 +126,8 @@ def _subgraph_to_facts(subgraph: Any, targets: list[str]) -> tuple[list[dict], b
     start = [nid for nid, n in nodes.items()
              if _fold(n["name"]) in target_keys
              or any(_fold(a) in target_keys for a in n.get("aliases") or [] if isinstance(a, str))]
+    if targets and not start:
+        return [], bool(valid_edges)
     adjacency: dict[str, set[str]] = {}
     for e in valid_edges:
         adjacency.setdefault(e["source_node_id"], set()).add(e["target_node_id"])
@@ -125,6 +136,8 @@ def _subgraph_to_facts(subgraph: Any, targets: list[str]) -> tuple[list[dict], b
     queue = deque(start)
     while queue:
         cur = queue.popleft()
+        if dist[cur] >= graph_depth:
+            continue
         for nxt in adjacency.get(cur, ()):
             if nxt not in dist:
                 dist[nxt] = dist[cur] + 1
@@ -136,7 +149,7 @@ def _subgraph_to_facts(subgraph: Any, targets: list[str]) -> tuple[list[dict], b
         s, t = e["source_node_id"], e["target_node_id"]
         if start:
             d = min(dist.get(s, 99), dist.get(t, 99))
-            if d >= GRAPH_DEPTH:
+            if d >= graph_depth:
                 dropped = True
                 continue
         else:
@@ -144,7 +157,9 @@ def _subgraph_to_facts(subgraph: Any, targets: list[str]) -> tuple[list[dict], b
         subject, obj = nodes[s]["name"], nodes[t]["name"]
         relation = str(e["relation_type"]).strip().lower()
         key = (_fold(subject), relation, _fold(obj))
-        note_ids = [n for n in e.get("source_note_ids") or [] if isinstance(n, str)]
+        raw_ids = e.get("source_note_ids")
+        note_ids = list(dict.fromkeys(n.strip() for n in raw_ids if isinstance(n, str) and n.strip())) \
+            if isinstance(raw_ids, list) else []
         if key in seen:
             for n in note_ids:
                 if n not in seen[key]["source_note_ids"]:
@@ -157,8 +172,8 @@ def _subgraph_to_facts(subgraph: Any, targets: list[str]) -> tuple[list[dict], b
 
     scored.sort(key=lambda x: x[0])              # stable: nearest to the target first
     facts = [f for _, f in scored]
-    if len(facts) > MAX_GRAPH_FACTS:
-        facts = facts[:MAX_GRAPH_FACTS]
+    if len(facts) > max_graph_facts:
+        facts = facts[:max_graph_facts]
         dropped = True
     return facts, dropped
 
@@ -177,7 +192,13 @@ def _results_to_chunks(results: Any, min_score: float) -> tuple[list[dict], bool
             dropped = True
             continue
         try:
-            score = max(0.0, min(1.0, float(r.get("score", 0.0))))
+            value = r.get("score", 0.0)
+            if isinstance(value, bool):
+                raise ValueError('a boolean is not a similarity score')
+            score = float(value)
+            if not math.isfinite(score):
+                raise ValueError('a similarity score must be finite')
+            score = max(0.0, min(1.0, score))
         except (TypeError, ValueError):
             dropped = True
             continue
@@ -204,13 +225,40 @@ def _results_to_chunks(results: Any, min_score: float) -> tuple[list[dict], bool
 # ---------------------------------------------------------------------------
 
 def retrieve(plan: dict, top_k: int = DEFAULT_TOP_K, *, vector_store: Any = None,
-             graph_store: Any = None, min_score: float = MIN_CHUNK_SCORE) -> dict:
+             graph_store: Any = None, min_score: float = MIN_CHUNK_SCORE,
+             graph_depth: int = GRAPH_DEPTH, max_graph_facts: int = MAX_GRAPH_FACTS) -> dict:
     """Plan -> EvidenceBundle. `vector_store` / `graph_store` / `min_score` are optional
     keyword-only overrides (tests); defaults are the real stores."""
     clean, notes = _clean_plan(plan)
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
         notes.append(f"invalid top_k {top_k!r}, used {DEFAULT_TOP_K}")
         top_k = DEFAULT_TOP_K
+    if top_k > MAX_TOP_K:
+        notes.append(f"top_k capped at {MAX_TOP_K}")
+        top_k = MAX_TOP_K
+    if isinstance(min_score, bool) or not isinstance(min_score, (int, float)) \
+            or not math.isfinite(min_score) or not 0 <= min_score <= 1:
+        raise ValueError('min_score must be a finite number between 0 and 1')
+    if type(graph_depth) is not int or not 1 <= graph_depth <= 5:
+        raise ValueError('graph_depth must be an integer between 1 and 5')
+    if type(max_graph_facts) is not int or not 1 <= max_graph_facts <= 100:
+        raise ValueError('max_graph_facts must be an integer between 1 and 100')
+    owned_graph = None
+    if graph_store is None and clean['query'] and clean['entities'] \
+            and clean['route'] in ('graph', 'hybrid'):
+        graph_store = owned_graph = _default_graph_store()
+    try:
+        return _retrieve(clean, notes, top_k, graph_store=graph_store, vector_store=vector_store,
+                         min_score=min_score, graph_depth=graph_depth,
+                         max_graph_facts=max_graph_facts)
+    finally:
+        close = getattr(owned_graph, 'close', None)
+        if callable(close):
+            close()
+
+
+def _retrieve(clean, notes, top_k, *, graph_store, vector_store, min_score,
+              graph_depth, max_graph_facts):
     route, query_text, targets = clean["route"], clean["query"], clean["entities"]
 
     if not query_text:
@@ -224,22 +272,49 @@ def retrieve(plan: dict, top_k: int = DEFAULT_TOP_K, *, vector_store: Any = None
     dropped_any = False
     graph_ok = vector_ok = False       # True = the source ran without error
     first_error: Exception | None = None
+    get_note = getattr(graph_store, 'get_note', None)
+    check_active = getattr(graph_store, 'is_note_active', None)
+    cached_notes, cached_active = {}, {}
+
+    def source_note(nid):
+        if nid not in cached_notes:
+            value = get_note(nid) if callable(get_note) else None
+            cached_notes[nid] = value if isinstance(value, dict) else None
+        return cached_notes[nid]
+
+    def is_active(nid):
+        if not isinstance(nid, str) or not nid:
+            return False
+        if nid not in cached_active:
+            cached_active[nid] = bool(check_active(nid)) if callable(check_active) else True
+        return cached_active[nid]
 
     # ---- graph ----
     if want_graph:
         if not targets:
             notes.append("no target entities, graph skipped")
         else:
-            store = graph_store if graph_store is not None else _default_graph_store()
+            store = graph_store
             if store is None:
                 notes.append("graph store unavailable")
             else:
                 try:
-                    subgraph = store.query_subgraph(entity_names=targets, depth=GRAPH_DEPTH)
-                    facts, d = _subgraph_to_facts(subgraph, targets)
+                    subgraph = store.query_subgraph(entity_names=targets, depth=graph_depth)
+                    facts, d = _subgraph_to_facts(subgraph, targets, graph_depth=graph_depth,
+                                                max_graph_facts=max_graph_facts)
                     dropped_any |= d
+                    if callable(check_active) or callable(get_note):
+                        sourced_facts = []
+                        for fact in facts:
+                            ids = [nid for nid in fact['source_note_ids'] if is_active(nid)
+                                   and (not callable(get_note) or source_note(nid))]
+                            dropped_any |= len(ids) != len(fact['source_note_ids']) or not ids
+                            if ids:
+                                sourced_facts.append({**fact, 'source_note_ids': ids})
+                        facts = sourced_facts
                     graph_ok = True
                 except Exception as e:           # noqa: BLE001  (store boundary)
+                    facts = []                   # never reuse partially checked graph results
                     logger.warning("graph query failed: %s", e)
                     notes.append(f"graph query failed ({type(e).__name__})")
                     first_error = first_error or e
@@ -251,9 +326,15 @@ def retrieve(plan: dict, top_k: int = DEFAULT_TOP_K, *, vector_store: Any = None
             notes.append("graph returned nothing, used vector only")
         elif route == "hybrid" and not facts:
             notes.append("graph returned nothing, used vector only")
-        store = vector_store if vector_store is not None else _vector_store_module.get_default_store()
         try:
-            raw = store.query(query_text, top_k=top_k)
+            store = vector_store if vector_store is not None else _vector_store_module.get_default_store()
+            # Overfetch before status filtering so stale hits cannot crowd out current notes.
+            raw = store.query(query_text, top_k=top_k * 4 if callable(check_active) else top_k)
+            if callable(check_active):
+                candidates = raw if isinstance(raw, list) else []
+                active = [r for r in candidates if isinstance(r, dict) and is_active(r.get("note_id"))]
+                dropped_any |= len(active) != len(candidates)
+                raw = active
             chunks, d = _results_to_chunks(raw, min_score)
             dropped_any |= d
             vector_ok = True
@@ -265,10 +346,28 @@ def retrieve(plan: dict, top_k: int = DEFAULT_TOP_K, *, vector_store: Any = None
     if not graph_ok and not vector_ok and first_error is not None:
         raise first_error                        # every attempted source failed: a real failure
 
+    # Graph facts also carry their original source passages. This preserves dates,
+    # qualifiers and quotes that are lost in a subject/predicate/object triple.
+    graph_chunks = []
+    if callable(get_note):
+        seen_notes = set()
+        for fact in facts:
+            for nid in fact["source_note_ids"]:
+                note = source_note(nid)
+                if nid in seen_notes or not note or not note.get("content"):
+                    continue
+                graph_chunks.append({"note_id": nid, "doc_id": note["doc_id"], "section": note.get("section"),
+                                     "text": note["content"], "score": 1.0, "source": "graph"})
+                seen_notes.add(nid)
+        # Preserve the original passages behind graph facts before filling the
+        # remaining budget with vector hits. Qualifiers and dates are absent from
+        # triples, and a full vector result page must not crowd their sources out.
+        chunks = graph_chunks + [c for c in chunks if c['note_id'] not in seen_notes]
+    dropped_any |= len(chunks) > top_k
     chunks = [{"evidence_id": f"E{i}", **c} for i, c in enumerate(chunks[:top_k], 1)]
     facts = [{"evidence_id": f"F{i}", **f} for i, f in enumerate(facts, 1)]
 
-    if facts and chunks:
+    if facts and any(c["source"] == "vector" for c in chunks):
         route_used = "hybrid"
     elif facts:
         route_used = "graph"
