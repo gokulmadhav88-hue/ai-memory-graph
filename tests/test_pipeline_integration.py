@@ -141,14 +141,17 @@ def test_index_failure_reports_pending_and_recovers(tmp_path):
     path.write_text('Atlas is managed by Maya.', encoding='utf-8')
     vector = LocalSearchStore()
     original = vector.add
+    original_batch = vector.add_many
     def fail(*args, **kwargs):
         raise RuntimeError('index offline')
     vector.add = fail
+    vector.add_many = fail
     agent = GraphAgent(MemoryStore(), vector)
     pipeline = IngestionPipeline(ExtractionAgent(DemoLLM('extraction')), agent)
     result = pipeline.ingest_document(path)
     assert result['status'] == 'ingested' and result['vector_pending'] == 1 and result['index_errors']
     vector.add = original
+    vector.add_many = original_batch
     result = pipeline.ingest_document(path)
     assert result['status'] == 'skipped_duplicate' and result['vector_pending'] == 0
 

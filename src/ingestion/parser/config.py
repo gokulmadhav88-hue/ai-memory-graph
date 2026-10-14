@@ -3,11 +3,13 @@
 Bump PARSER_VERSION whenever a change alters the parser's output.
 """
 
-PARSER_VERSION = "0.6.0"
+PARSER_VERSION = "0.7.0"
 
 # --- Input validation (rules 1, 5) ---
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".xlsx"}
 MAX_FILE_SIZE_MB = 20
+MAX_ARCHIVE_SIZE_MB = 100
+MAX_ARCHIVE_MEMBERS = 2000
 
 # --- Cleaning (rules 12, 16) ---
 HEADER_LINES = 2

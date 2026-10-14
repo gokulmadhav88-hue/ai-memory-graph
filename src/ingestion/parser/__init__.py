@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import config
 from .chunker import chunk_text, heading_text, split_paragraphs
-from .cleaner import clean_pages
+from .cleaner import clean_pages, clean_page_texts
 from .figures import DescribeFn, describe_figures
 from .readers import read_document
 from .schema import Chunk
@@ -49,9 +49,22 @@ def parse_document(file_path: str | Path, describe_image: DescribeFn | None = No
     digest = file_hash(path)
     doc = read_document(path)
 
-    pieces = chunk_text(clean_pages(doc.pages))
+    # Keep PDF text on its originating page. Other formats do not have stable
+    # physical pages (a DOCX's pagination depends on its renderer).
+    text_pieces = []
+    if path.suffix.lower() == ".pdf":
+        section = None
+        for number, page in enumerate(clean_page_texts(doc.pages), start=1):
+            for piece in chunk_text(page, initial_section=section):
+                text_pieces.append((piece, number, number in doc.ocr_pages))
+            for paragraph in split_paragraphs(page):
+                title = heading_text(paragraph)
+                if title is not None:
+                    section = title
+    else:
+        text_pieces = [(piece, None, False) for piece in chunk_text(clean_pages(doc.pages))]
     sections_by_page = _page_sections(doc.pages)
-    is_ocr = bool(doc.ocr_pages)          # rule 4 alternative: OCR applies to the whole doc
+    is_ocr = bool(doc.ocr_pages)
 
     tables = table_pieces(doc.tables)
     for t in tables:
@@ -70,9 +83,9 @@ def parse_document(file_path: str | Path, describe_image: DescribeFn | None = No
         parser_version=config.PARSER_VERSION,
     )
     chunks: list[Chunk] = []
-    for piece in pieces:
+    for piece, page, from_ocr in text_pieces:
         chunks.append(Chunk(chunk_index=len(chunks), text=piece.text,
-                            section=piece.section, is_ocr=is_ocr, **common))
+                            page=page, section=piece.section, is_ocr=from_ocr, **common))
 
     numeric_tables = 0
     for t in tables:
@@ -94,7 +107,7 @@ def parse_document(file_path: str | Path, describe_image: DescribeFn | None = No
     # Rule 40: one summary line per document
     log.info(
         "%s: %d chunks (%d text%s, %d table, %d numeric-table, %d figure)",
-        path.name, len(chunks), len(pieces), " [OCR]" if is_ocr else "",
+        path.name, len(chunks), len(text_pieces), " [OCR]" if is_ocr else "",
         len(tables), numeric_tables, len(figures),
     )
     return chunks

@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      APP_ENV: team
+      APP_AUTH_REQUIRED: "1"
+      NEO4J_URI: neo4j://neo4j:7687
+      CHROMA_PATH: /app/data/chroma
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - chroma_data:/app/data/chroma
+      - model_cache:/home/app/.cache/chroma
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+  model_cache:

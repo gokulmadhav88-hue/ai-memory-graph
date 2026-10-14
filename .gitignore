@@ -23,3 +23,7 @@ data/chroma/
 data/uploads/
 data/demo/
 .test-results/
+.pytest-temp*/
+.streamlit/secrets.toml
+.env.*
+!.env.example

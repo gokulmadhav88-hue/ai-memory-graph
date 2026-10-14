@@ -30,7 +30,7 @@ Real Chroma tests use a deterministic embedder without downloading a model.
 Exact suite results are recorded below after validation. Fake-driver tests do
 not validate live Cypher or server compatibility.
 
-Final local validation: **379 passed, 4 skipped** with Python 3.11. The skips are
+First integration validation: **379 passed, 4 skipped** with Python 3.11. The skips are
 one missing large-file fixture, two optional Tesseract OCR checks, and the opt-in
 live Neo4j test. Eleven deprecation warnings originate from legacy test embedding
 functions, not the runtime's DefaultEmbeddingFunction. Changed-file Ruff checks,
@@ -55,8 +55,8 @@ The dependency versions used are saved in requirements-lock.txt.
 
 ## First-version limits
 
-- Small corpus, one app process. Neo4j snapshot/projection rewrites prioritize
-  compatibility with GraphAgent over scale.
+- Small corpus, one app process. Full Neo4j memory snapshots remain; projection
+  records are now updated incrementally by the subsequent hardening changes.
 - Neo4j/Chroma do not share a transaction. Pending vector upserts retry; graph
   status excludes stale hits. Failed vector deletions can leave unusable entries.
 - Supersession operates on whole notes. Mixed predicates are retained conservatively.
@@ -65,3 +65,11 @@ The dependency versions used are saved in requirements-lock.txt.
 - External web reasoning remains opt-in and is not enabled in the document UI.
 - Authentication, user isolation, and deployment are outside this local team version.
 - Local changes have not been committed, pushed, or merged on GitHub.
+
+## Subsequent hardening
+
+The first integration was committed locally as 2df9c8c. The current hardening
+changes are separate working-tree edits. Their full suite passes **467 tests,
+4 skipped**. See [capabilities](agent_capabilities.md),
+[hardening report](hardening_report.md), and [deployment gates](deployment_checklist.md)
+for the updated behavior and remaining verification.

@@ -93,13 +93,17 @@ def _clean_history(history: Any) -> list[dict]:
     if not USE_HISTORY or not isinstance(history, list):
         return []
     turns = []
-    for item in history:
+    # Work backwards and stop when the prompt budget is filled. A long chat
+    # should not require cleaning every prior turn on every question.
+    for item in reversed(history):
         if isinstance(item, dict) and isinstance(item.get("content"), str):
             content = _normalize(item["content"])[:MAX_HISTORY_CHARS]
             if content:
                 role = item.get("role") if item.get("role") in ("user", "assistant") else "user"
                 turns.append({"role": role, "content": content})
-    return turns[-MAX_HISTORY_TURNS:]
+                if len(turns) == MAX_HISTORY_TURNS:
+                    break
+    return list(reversed(turns))
 
 
 def _build_prompt(question: str, history: list[dict]) -> str:
@@ -125,11 +129,11 @@ def _mentioned(entity: str, *texts: str) -> bool:
     key = _fold(entity)
     if not key:
         return False
+    # Require word boundaries for every name: "Atlas" is not "Atlassian".
+    # Separators inside a name remain optional ("gpt4" matches "GPT-4").
+    pattern = re.compile(r"(?<!\w)" + r"[\W_]*".join(re.escape(ch) for ch in key) + r"(?!\w)")
     for text in texts:
-        if len(key) <= 3:                            # short names must match a whole token
-            if any(_fold(tok) == key for tok in re.split(r"[\s,;:()?!\"']+", text)):
-                return True
-        elif key in _fold(text):
+        if pattern.search(text.casefold()):
             return True
     return False
 

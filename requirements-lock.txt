@@ -8,6 +8,7 @@ annotated-types==0.8.0
 anthropic==0.125.0
 anyio==4.15.1
 attrs==26.1.0
+Authlib==1.9.0
 bcrypt==5.0.0
 build==1.6.1
 certifi==2026.7.22
@@ -41,6 +42,7 @@ iniconfig==2.3.1
 itsdangerous==2.2.0
 Jinja2==3.1.6
 jiter==0.17.0
+joserfc==1.7.5
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 kubernetes==37.0.1

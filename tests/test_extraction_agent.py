@@ -47,3 +47,22 @@ def test_unconfigured_client_explicit_error(monkeypatch):
     monkeypatch.setenv('LLM_PROVIDER', 'openai')
     with pytest.raises(ExtractionError, match='not configured'):
         ExtractionAgent().extract('Useful text', 'doc')
+
+
+def test_duplicate_entity_names_are_repaired():
+    bad = output()
+    bad['entities'].append(deepcopy(bad['entities'][0]))
+    result = ExtractionAgent(FakeLLM([bad, output()])).extract('Atlas is managed by Maya.', 'doc')
+    assert len(result.entities) == 2
+
+
+def test_malformed_relation_endpoint_has_typed_error():
+    bad = output()
+    bad['relations'][0]['subject'] = ['Atlas']
+    with pytest.raises(ExtractionError, match='Invalid relation'):
+        ExtractionAgent.validate(bad, 'Atlas is managed by Maya.')
+
+
+def test_invalid_conversation_turn_has_typed_error():
+    with pytest.raises(ExtractionError, match='turns must be objects'):
+        ExtractionAgent().extract_conversation(['bad turn'], 'chat')

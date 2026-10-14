@@ -148,14 +148,14 @@ def _pdf_figures(path: Path) -> list[FigureRef]:
                         continue
                     figures.append(FigureRef(
                         image_bytes=base["image"], page=page_number,
-                        width=base.get("width", 0), height=base.get("height", 0),
+                        width=base.get("width") or None, height=base.get("height") or None,
                     ))
     except Exception as e:
         log.warning("%s: figure extraction failed (%s), continuing without figures", path.name, e)
     return figures
 
 
-def _render_pdf_pages(path: Path) -> list[bytes]:
+def _render_pdf_pages(path: Path, page_numbers: list[int] | None = None) -> list[bytes]:
     """Render each page to a PNG image, for OCR on a scanned/image-only PDF."""
     import pymupdf
 
@@ -163,7 +163,9 @@ def _render_pdf_pages(path: Path) -> list[bytes]:
     with pymupdf.open(path) as doc:
         zoom = config.OCR_RENDER_DPI / 72
         matrix = pymupdf.Matrix(zoom, zoom)
-        for page in doc:
+        selected = range(1, len(doc) + 1) if page_numbers is None else page_numbers
+        for number in selected:
+            page = doc[number - 1]
             pix = page.get_pixmap(matrix=matrix)
             images.append(pix.tobytes("png"))
     return images
@@ -195,21 +197,24 @@ def _read_pdf(path: Path) -> RawDocument:
     figures = _pdf_figures(path)
     doc = RawDocument(pages=pages, tables=tables, figures=figures)
 
-    if doc.is_empty():                                   # rule 4: blank or scanned
-        if config.ENABLE_OCR:
-            log.info("%s: no extractable text, running OCR", path.name)
-            rendered = _render_pdf_pages(path)
-            ocr_text = ocr_pages(rendered)
-            kept_pages = [t if len(t.strip()) >= config.OCR_MIN_CHARS else "" for t in ocr_text]
-            if not any(p.strip() for p in kept_pages):
-                log.warning("%s: OCR found no usable text either, skipping", path.name)
-                return RawDocument()
-            return RawDocument(
-                pages=kept_pages,
-                ocr_pages={i + 1 for i, p in enumerate(kept_pages) if p.strip()},
-            )
+    # A mixed PDF may contain searchable and scanned pages. OCR only pages
+    # without a useful text layer, retaining both the page number and figures.
+    table_pages = {table.page for table in tables}
+    missing = [i for i, text in enumerate(pages, start=1)
+               if len(text.strip()) < config.OCR_MIN_CHARS and i not in table_pages]
+    if config.ENABLE_OCR:
+        if missing:
+            log.info("%s: running OCR on %d page(s) without a text layer", path.name, len(missing))
+            for number, text in zip(missing, ocr_pages(_render_pdf_pages(path, missing))):
+                if len(text.strip()) >= config.OCR_MIN_CHARS:
+                    doc.pages[number - 1] = text
+                    doc.ocr_pages.add(number)
+    elif missing:
+        log.warning("%s: %d page(s) lack searchable text; OCR is disabled", path.name, len(missing))
+
+    if doc.is_empty():
         log.warning("%s: no extractable text (blank or scanned PDF), skipping", path.name)
-        return RawDocument()
+        return doc  # Figure-only PDFs may still be described by the optional callback.
 
     if figures:
         log.info("%s: %d figure(s) found", path.name, len(figures))
@@ -242,7 +247,7 @@ def _docx_figures(d) -> list[FigureRef]:
                 continue
             try:
                 blob = rel.target_part.blob
-                width, height = 0, 0
+                width, height = None, None
                 try:                                        # dimensions needed for the size filter
                     from PIL import Image
                     with Image.open(io.BytesIO(blob)) as im:
@@ -303,6 +308,20 @@ def _read_docx(path: Path) -> RawDocument:
 
 # ---------- .csv and .xlsx (the whole file is a table) ----------
 
+def _bounded_table_rows(rows, label: str) -> list[list[str]]:
+    """Stop before materializing rows the table converter would later discard."""
+    kept = []
+    for row in rows:
+        if not any(cell.strip() for cell in row):
+            continue
+        if len(kept) >= config.MAX_TABLE_ROWS + 1:  # one header plus body limit
+            log.warning("%s has more than %d data rows, keeping the first %d",
+                        label, config.MAX_TABLE_ROWS, config.MAX_TABLE_ROWS)
+            break
+        kept.append(row)
+    return kept
+
+
 def _read_csv(path: Path) -> RawDocument:
     raw = path.read_text(encoding="utf-8-sig", errors="replace")
     if not raw.strip():
@@ -311,7 +330,7 @@ def _read_csv(path: Path) -> RawDocument:
         dialect = csv.Sniffer().sniff(raw[:4096], delimiters=",;\t|")
     except csv.Error:
         dialect = csv.excel
-    rows = list(csv.reader(io.StringIO(raw, newline=""), dialect))
+    rows = _bounded_table_rows(csv.reader(io.StringIO(raw, newline=""), dialect), path.name)
     return RawDocument(tables=[Table(rows=rows, caption=path.stem.replace("_", " "))])
 
 
@@ -326,7 +345,10 @@ def _read_xlsx(path: Path) -> RawDocument:
     tables: list[Table] = []
     try:
         for ws in wb.worksheets:
-            rows = [["" if v is None else str(v) for v in row] for row in ws.iter_rows(values_only=True)]
+            rows = _bounded_table_rows(
+                (["" if v is None else str(v) for v in row] for row in ws.iter_rows(values_only=True)),
+                f"{path.name}, sheet '{ws.title}'",
+            )
             if any(any(c.strip() for c in r) for r in rows):
                 tables.append(Table(rows=rows, caption=ws.title))
     finally:

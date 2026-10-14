@@ -1,0 +1,17 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.integration-backup
+.test-deps
+.test-results
+.pytest-temp*
+.pytest_cache
+**/__pycache__
+data/chroma
+data/demo
+data/uploads
+data/memory_store.json*
+inspect_output.txt

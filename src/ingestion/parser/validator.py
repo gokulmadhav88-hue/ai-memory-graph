@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 from . import config
 
@@ -57,6 +58,21 @@ def validate_file(file_path: str | Path) -> Path:
             raise EncryptedFile(f"{path.name} is encrypted or in an old Office format")
         if not head.startswith(b"PK"):
             raise InvalidFile(f"{path.name} has a {ext} extension but is not a real {ext} file")
+        try:
+            with ZipFile(path) as archive:
+                members = archive.infolist()
+                if len(members) > config.MAX_ARCHIVE_MEMBERS:
+                    raise FileTooLarge(f"{path.name}: Office archive has too many members")
+                if sum(member.file_size for member in members) > config.MAX_ARCHIVE_SIZE_MB * 1024 * 1024:
+                    raise FileTooLarge(f"{path.name}: expanded Office archive exceeds {config.MAX_ARCHIVE_SIZE_MB} MB")
+                if any(member.flag_bits & 1 for member in members):
+                    raise EncryptedFile(f"{path.name}: Office archive is encrypted")
+                required = "word/document.xml" if ext == ".docx" else "xl/workbook.xml"
+                names = {member.filename for member in members}
+                if required not in names or "[Content_Types].xml" not in names:
+                    raise InvalidFile(f"{path.name}: archive is missing required Office content")
+        except BadZipFile as exc:
+            raise InvalidFile(f"{path.name}: invalid Office archive") from exc
     elif ext in (".txt", ".md", ".csv"):
         if b"\x00" in head:
             raise InvalidFile(f"{path.name} looks like a binary file, not text")

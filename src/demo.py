@@ -32,6 +32,19 @@ class LocalSearchStore:
         self.records[note_id] = {'note_id': note_id, 'text': text, 'metadata': deepcopy(metadata)}
         self._commit()
 
+    def add_many(self, records):
+        for record in records:
+            self.records[record['note_id']] = {'note_id': record['note_id'], 'text': record['text'],
+                                              'metadata': deepcopy(record['metadata'])}
+        self._commit()
+
+    def delete_notes(self, note_ids):
+        removed = sum(nid in self.records for nid in set(note_ids))
+        for nid in note_ids:
+            self.records.pop(nid, None)
+        self._commit()
+        return removed
+
     def query(self, query_text, top_k=5):
         query = tokens(query_text)
         results = [dict(r, score=len(query & tokens(r['text'])) / max(1, len(query)))

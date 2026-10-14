@@ -100,9 +100,33 @@ become an insufficient-evidence answer; supported partial answers remain visible
 Neo4j commits the complete memory state and graph projection in one transaction.
 Browse AMGEntity nodes and AMG_FACT relationships with relation_type, memory_id,
 and status. Records are scoped by NEO4J_GRAPH_ID; revision checks reject stale
-writers. This v1 loads the corpus in memory and rewrites its projection on commit.
+writers. This v1 loads the corpus in memory and updates changed projection records
+on commit while still serializing the complete memory snapshot.
 Use one app process with a small corpus; larger deployments need incremental
 transactions and database-side traversal.
 
 See [the integration audit](docs/integration_audit.md) for initial gaps, fixes,
 remaining validation, and team decisions.
+
+## Hardening and deployment
+
+Read [every agent's capabilities and limits](docs/agent_capabilities.md),
+[the measured hardening changes](docs/hardening_report.md), and
+[the team/public deployment checklist](docs/deployment_checklist.md).
+
+Target: private shared team workspace. Set APP_ENV=team, APP_AUTH_REQUIRED=1 and
+APP_ALLOWED_EMAILS; configure OIDC in ignored .streamlit/secrets.toml. Access
+fails closed without a verified allowlisted identity. Local demo uses APP_ENV=local.
+
+Configuration includes LLM_TIMEOUT_SECONDS/LLM_MAX_RETRIES, retrieval top-k/depth/
+score/fact budgets, QUERY_MAX_RETRIES, PARSER_ENABLE_OCR and upload/history limits.
+See .env.example for names and defaults.
+
+Annotated evaluation:
+
+    .\.venv\Scripts\python.exe -m eval.run_eval eval/demo_cases.jsonl --demo
+
+Dockerfile and compose.team.yaml prepare a single-process team app; build and
+service smoke checks are still required on the hosting platform. GitHub Actions
+runs tests/dependency checks after committing/pushing. Public isolation, quotas and
+larger-corpus architecture are release gates described in the checklist.

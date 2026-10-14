@@ -23,8 +23,11 @@ against a live API yet. Run a smoke test once a key is available.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+from threading import RLock, local
+from time import perf_counter
 from typing import Any, Callable
 
 
@@ -129,7 +132,11 @@ def _openai(model, prompt, system, max_tokens, temperature, api_key, json_mode) 
         from openai import OpenAI
     except ImportError as e:
         raise LLMError("the 'openai' package is not installed (pip install openai)") from e
-    client = OpenAI(api_key=api_key) if api_key else OpenAI()
+    with OpenAI(api_key=api_key, timeout=60.0, max_retries=1) as client:
+        return _openai_request(client, model, prompt, system, max_tokens, temperature, json_mode)[0]
+
+
+def _openai_request(client, model, prompt, system, max_tokens, temperature, json_mode):
     messages = ([{"role": "system", "content": system}] if system else []) + [
         {"role": "user", "content": prompt}]
     kwargs: dict[str, Any] = dict(model=model, messages=messages,
@@ -137,7 +144,7 @@ def _openai(model, prompt, system, max_tokens, temperature, api_key, json_mode) 
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}   # prompt must mention JSON
     resp = client.chat.completions.create(**kwargs)
-    return resp.choices[0].message.content or ""
+    return resp.choices[0].message.content or "", resp.usage
 
 
 def _anthropic(model, prompt, system, max_tokens, temperature, api_key, json_mode) -> str:
@@ -148,13 +155,19 @@ def _anthropic(model, prompt, system, max_tokens, temperature, api_key, json_mod
         from anthropic import Anthropic
     except ImportError as e:
         raise LLMError("the 'anthropic' package is not installed (pip install anthropic)") from e
-    client = Anthropic(api_key=api_key) if api_key else Anthropic()
+    with Anthropic(api_key=api_key, timeout=60.0, max_retries=1) as client:
+        return _anthropic_request(client, model, prompt, system, max_tokens, temperature, json_mode)[0]
+
+
+def _anthropic_request(client, model, prompt, system, max_tokens, temperature, json_mode):
+    if json_mode:
+        prompt += "\nReturn only one JSON object."
     kwargs: dict[str, Any] = dict(model=model, max_tokens=max_tokens, temperature=temperature,
                                   messages=[{"role": "user", "content": prompt}])
     if system:
         kwargs["system"] = system
     resp = client.messages.create(**kwargs)
-    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text"), resp.usage
 
 
 _PROVIDERS: dict[str, ProviderFn] = {"fake": _fake, "openai": _openai, "anthropic": _anthropic}
@@ -173,10 +186,27 @@ class LLMClient:
     """A client bound to one provider + model (one per agent if you like)."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None,
-                 provider: str | None = None, agent: str | None = None):
+                 provider: str | None = None, agent: str | None = None,
+                 timeout: float | None = None, max_retries: int | None = None):
         self.api_key = api_key
         self.agent = agent
         self.provider, self.model = _resolve(agent, provider, model)
+        if self.provider not in _PROVIDERS:
+            raise LLMError(f"unknown provider '{self.provider}'")
+        if isinstance(timeout, bool) or (max_retries is not None and type(max_retries) is not int):
+            raise LLMError("timeout must be numeric and max_retries must be an integer")
+        try:
+            self.timeout = float(timeout if timeout is not None else (_env("LLM_TIMEOUT_SECONDS") or 60))
+            self.max_retries = int(max_retries if max_retries is not None else (_env("LLM_MAX_RETRIES") or 1))
+        except (TypeError, ValueError) as exc:
+            raise LLMError("LLM timeout/retry settings must be numeric") from exc
+        if not math.isfinite(self.timeout) or not 0 < self.timeout <= 600 or not 0 <= self.max_retries <= 3:
+            raise LLMError("LLM timeout must be 0..600 seconds and retries 0..3")
+        self._sdk = None
+        self._lock = RLock()
+        self._closed = False
+        self._usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "elapsed_seconds": 0.0}
+        self._local = local()
 
     def __repr__(self) -> str:
         return f"LLMClient(agent={self.agent!r}, provider={self.provider!r}, model={self.model!r})"
@@ -185,18 +215,78 @@ class LLMClient:
              temperature: float, json_mode: bool) -> str:
         if not isinstance(prompt, str) or not prompt.strip():
             raise LLMError("prompt must be a non-empty string")
+        if self._closed:
+            raise LLMError("LLM client is closed")
+        if type(max_tokens) is not int or not 1 <= max_tokens <= 32000:
+            raise LLMError("max_tokens must be an integer between 1 and 32000")
         fn = _PROVIDERS.get(self.provider)
         if fn is None:
             raise LLMError(f"unknown provider '{self.provider}' (known: {sorted(_PROVIDERS)})")
+        started = perf_counter()
+        usage = None
         try:
-            out = fn(self.model, prompt, system, max_tokens, temperature, self.api_key, json_mode)
+            if (self.provider == "openai" and fn is _openai) or (self.provider == "anthropic" and fn is _anthropic):
+                client = self._get_sdk()
+                request = _openai_request if self.provider == "openai" else _anthropic_request
+                out, usage = request(client, self.model, prompt, system, max_tokens, temperature, json_mode)
+            else:
+                out = fn(self.model, prompt, system, max_tokens, temperature, self.api_key, json_mode)
         except LLMError:
             raise
         except Exception as e:      # SDK / network / auth errors
-            raise LLMError(f"{self.provider} call failed: {type(e).__name__}: {e}") from e
+            # Keep SDK messages (which may contain request data/credentials) out of UI logs.
+            raise LLMError(f"{self.provider} call failed ({type(e).__name__})") from e
+        finally:
+            with self._lock:
+                delta = {"calls": 1, "elapsed_seconds": perf_counter() - started,
+                         "input_tokens": (getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)) or 0),
+                         "output_tokens": (getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)) or 0)}
+                current = getattr(self._local, "usage", dict.fromkeys(delta, 0))
+                for key, value in delta.items():
+                    self._usage[key] += value
+                    current[key] += value
+                self._local.usage = current
         if not isinstance(out, str):
             raise LLMError(f"{self.provider} returned {type(out).__name__}, expected text")
         return out
+
+    def _get_sdk(self):
+        with self._lock:
+            if self._sdk is None:
+                env_key = "OPENAI_API_KEY" if self.provider == "openai" else "ANTHROPIC_API_KEY"
+                key = self.api_key or _env(env_key)
+                if not key:
+                    raise LLMError(f"{self.provider} is not configured: set {env_key}")
+                try:
+                    if self.provider == "openai":
+                        from openai import OpenAI as SDK
+                    else:
+                        from anthropic import Anthropic as SDK
+                except ImportError as exc:
+                    raise LLMError(f"The {self.provider} SDK is not installed") from exc
+                self._sdk = SDK(api_key=key, timeout=self.timeout, max_retries=self.max_retries)
+            return self._sdk
+
+    def usage(self):
+        """Counters for this thread; query deltas exclude concurrent callers."""
+        return dict(getattr(self._local, "usage", dict.fromkeys(self._usage, 0)))
+
+    def total_usage(self):
+        with self._lock:
+            return dict(self._usage)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            if self._sdk is not None:
+                self._sdk.close()
+                self._sdk = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def complete(self, prompt: str, system: str | None = None, max_tokens: int = 1000,
                  temperature: float = 0.0) -> str:
@@ -234,8 +324,10 @@ def for_agent(agent: str) -> LLMClient:
 
 def complete(prompt: str, system: str | None = None, max_tokens: int = 1000,
              temperature: float = 0.0) -> str:
-    return LLMClient().complete(prompt, system, max_tokens, temperature)
+    with LLMClient() as client:
+        return client.complete(prompt, system, max_tokens, temperature)
 
 
 def complete_json(prompt: str, system: str | None = None, max_tokens: int = 1000) -> dict:
-    return LLMClient().complete_json(prompt, system, max_tokens)
+    with LLMClient() as client:
+        return client.complete_json(prompt, system, max_tokens)
