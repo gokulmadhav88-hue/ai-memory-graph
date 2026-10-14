@@ -122,6 +122,9 @@ def _fake(model, prompt, system, max_tokens, temperature, api_key, json_mode) ->
 
 
 def _openai(model, prompt, system, max_tokens, temperature, api_key, json_mode) -> str:
+    api_key = api_key or _env("OPENAI_API_KEY")
+    if not api_key:
+        raise LLMError("openai is not configured: set OPENAI_API_KEY")
     try:
         from openai import OpenAI
     except ImportError as e:
@@ -138,6 +141,9 @@ def _openai(model, prompt, system, max_tokens, temperature, api_key, json_mode) 
 
 
 def _anthropic(model, prompt, system, max_tokens, temperature, api_key, json_mode) -> str:
+    api_key = api_key or _env("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise LLMError("anthropic is not configured: set ANTHROPIC_API_KEY")
     try:
         from anthropic import Anthropic
     except ImportError as e:

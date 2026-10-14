@@ -1,10 +1,10 @@
 # Ingestion memory evolution contract (v1)
 
-Implemented in `extraction_agent.py` and `graph_agent.py`. This supplements the older I/O contract; downstream retrieval and Neo4j adapters need updating before full integration.
+Implemented in `extraction_agent.py` and `graph_agent.py`. Neo4j and retrieval now share this memory model; see the integration addendum in io_contracts.md and integration_audit.md.
 
 ## Extraction
 
-Inject an object providing `complete_json(prompt, system=..., max_tokens=...)`. The shared `src/llm_client.py` is currently a placeholder and is not silently replaced with fake extraction.
+Inject an object providing `complete_json(prompt, system=..., max_tokens=...)`. The shared `src/llm_client.py` supports configured providers and per-agent clients; the runtime never silently replaces full-mode extraction with demo output.
 
 `ExtractionAgent(llm).extract_note(chunk, source_type="document", source_time=None)` returns `ExtractedNote`, convertible with `to_dict()`. `extract_conversation(turns, conversation_id)` accepts user/assistant turns with content and optional timezone-aware timestamp. Conversation text includes the speaker; treat claims as assertions, not verified facts. Document and conversation IDs must be namespaced by callers to prevent cross-user collisions. Conversation storage must be explicitly invoked by the application, not automatically enabled for every chat.
 
@@ -18,7 +18,7 @@ Validation retries extraction once, rejects invented quote strings, invalid enti
 
 Without an LLM, exact duplicate text merges and distinct evidence is added. With an LLM, ambiguous entity resolution and memory decisions are proposed. Code verifies target IDs, entity types, equivalent relation sets before consolidation, and explicit later event times with matching subject/predicate sets before updates. Unknown or ambiguous facts are preserved. Retirement is reversible through history; no source records are deleted. Retain leaves previous memories untouched and stores incoming evidence separately. This first version evolves whole notes: mixed-fact notes are conservatively retained when predicates differ. It does not provide arbitrary fact-level edits, semantic contradiction guarantees, or usage-based pruning.
 
-`MemoryStore()` is in-memory. `MemoryStore(path)` persists nodes, edges, original notes, active/superseded/retired memories, revisions, and audit events to an atomically replaced JSON file. Intended for single-process development. This is a working local reference adapter, not a Neo4j connection. A production Neo4j adapter must implement the lock/snapshot/restore/commit and record mappings used by GraphAgent, preferably replacing snapshot operations with database transactions. Existing placeholder Neo4jStore is rejected explicitly.
+`MemoryStore()` is in-memory. `MemoryStore(path)` persists nodes, edges, notes, memories, revisions, events, and the document ledger in atomically replaced JSON. Neo4jStore implements the same protocol with a transactional state and graph projection, plus optimistic revision checks. Both are small-corpus adapters; Neo4j traversal currently runs on the loaded snapshot.
 
 Each memory links its source_note_ids. Edges reference memory_id; consumers must join to memory status before treating an edge as current. Original edges remain for historical retrieval. Multi-target merges retire redundant memories and preserve their source references. Events preserve decisions; revisions preserve previous state.
 
@@ -38,6 +38,6 @@ for chunk in parsed_chunks:
 
 ## Integration remaining
 
-Implement the real LLM client, Neo4j adapter, vector upsert adapter, ingestion pipeline, and downstream active/history filtering. Agree on entity/relation vocabularies and temporal update semantics with teammates. A more recent timestamp alone cannot establish trust or resolve arbitrary multi-valued relationships.
+The shared LLM client, Neo4j adapter, vector upsert adapter, ingestion pipeline, and active/history filtering are connected. Live service validation, corpus evaluation, entity/relation vocabulary agreement, and update semantics remain team tasks. A later timestamp alone cannot establish trust or resolve arbitrary multi-valued relationships.
 
 Updates are restricted to configured single-valued predicates (exclusive_relations; defaults managed_by and led_by). Configure this with the team; multi-valued facts such as invested_in must accumulate rather than overwrite.

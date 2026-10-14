@@ -81,8 +81,11 @@ def _default_graph_store() -> Any | None:
         return None
     try:
         instance = cls()
+        connect = getattr(instance, "connect", None)
+        if callable(connect):
+            connect()
     except Exception as e:                      # noqa: BLE001
-        logger.warning("Neo4jStore() failed: %s", e)
+        logger.warning("Neo4jStore connection failed: %s", e)
         return None
     return instance if hasattr(instance, "query_subgraph") else None
 
@@ -253,7 +256,14 @@ def retrieve(plan: dict, top_k: int = DEFAULT_TOP_K, *, vector_store: Any = None
             notes.append("graph returned nothing, used vector only")
         store = vector_store if vector_store is not None else _vector_store_module.get_default_store()
         try:
-            raw = store.query(query_text, top_k=top_k)
+            # Overfetch before status filtering so stale hits cannot crowd out current notes.
+            status_store = graph_store
+            check_active = getattr(status_store, "is_note_active", None)
+            raw = store.query(query_text, top_k=top_k * 4 if callable(check_active) else top_k)
+            if callable(check_active):
+                active = [r for r in raw if isinstance(r, dict) and check_active(r.get("note_id"))]
+                dropped_any |= len(active) != len(raw)
+                raw = active
             chunks, d = _results_to_chunks(raw, min_score)
             dropped_any |= d
             vector_ok = True
@@ -265,10 +275,23 @@ def retrieve(plan: dict, top_k: int = DEFAULT_TOP_K, *, vector_store: Any = None
     if not graph_ok and not vector_ok and first_error is not None:
         raise first_error                        # every attempted source failed: a real failure
 
+    # Graph facts also carry their original source passages. This preserves dates,
+    # qualifiers and quotes that are lost in a subject/predicate/object triple.
+    get_note = getattr(graph_store, "get_note", None)
+    if callable(get_note):
+        seen_notes = {c["note_id"] for c in chunks}
+        for fact in facts:
+            for nid in fact["source_note_ids"]:
+                note = get_note(nid)
+                if nid in seen_notes or not note or not note.get("content"):
+                    continue
+                chunks.append({"note_id": nid, "doc_id": note["doc_id"], "section": note.get("section"),
+                               "text": note["content"], "score": 1.0, "source": "graph"})
+                seen_notes.add(nid)
     chunks = [{"evidence_id": f"E{i}", **c} for i, c in enumerate(chunks[:top_k], 1)]
     facts = [{"evidence_id": f"F{i}", **f} for i, f in enumerate(facts, 1)]
 
-    if facts and chunks:
+    if facts and any(c["source"] == "vector" for c in chunks):
         route_used = "hybrid"
     elif facts:
         route_used = "graph"

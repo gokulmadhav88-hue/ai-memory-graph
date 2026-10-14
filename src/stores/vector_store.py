@@ -23,13 +23,10 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from .errors import StoreError
 
 DEFAULT_COLLECTION = "memory_graph"
 DEFAULT_PERSIST_PATH = "data/chroma"   # override with CHROMA_PATH or persist_path=
-
-
-class StoreError(Exception):
-    """A real failure talking to a store (not an empty result)."""
 
 
 def _distance_to_score(distance: float) -> float:

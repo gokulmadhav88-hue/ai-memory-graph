@@ -1,5 +1,7 @@
 from src.ingestion.parser import config
 from src.ingestion.parser.figures import FigureRef, describe_figures, ocr_image
+import shutil
+import pytest
 
 
 def fake_describer(image_bytes: bytes) -> str:
@@ -81,6 +83,7 @@ def test_max_figures_per_doc_is_enforced(monkeypatch):
     assert len(pieces) == 2
 
 
+@pytest.mark.skipif(shutil.which('tesseract') is None, reason='Optional Tesseract OCR engine is not installed')
 def test_ocr_reads_real_text_from_an_image():
     from PIL import Image, ImageDraw, ImageFont
     import io as _io

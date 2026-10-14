@@ -208,9 +208,13 @@ def test_graph_store_unavailable_falls_back(monkeypatch):
     assert "graph store unavailable" in b["notes"] and len(b["chunks"]) == 2
 
 
-def test_placeholder_neo4j_store_without_query_subgraph_is_handled():
+def test_unavailable_neo4j_store_is_handled(monkeypatch):
+    from src.stores.neo4j_store import Neo4jStore
+    def fail(self):
+        raise RuntimeError("database unavailable")
+    monkeypatch.setattr(Neo4jStore, "connect", fail)
     from src.query.retrieval_agent import _default_graph_store
-    assert _default_graph_store() is None                  # today's placeholder has no query_subgraph
+    assert _default_graph_store() is None
 
 
 def test_messy_plan_is_repaired_not_crashed():

@@ -1,5 +1,39 @@
 # I/O Contracts: AI Memory Graph (v2)
 
+## Integration addendum — 2026-10-14 (overrides historical examples below)
+
+- Python 3.11+; deterministic SHA-256 note IDs. Relations require evidence_quote
+  and optional timezone-aware event_time. Notes preserve source_type/time,
+  source_filename, and page.
+- GraphAgent uses MemoryStore: lock, nodes/edges/notes/memories/events/documents,
+  snapshot, restore, commit. Neo4jStore implements transactional persistence plus
+  get_note, is_note_active, query_subgraph, document_exists, refresh, and close.
+  AMG_FACT stores relation_type as a property. The older write_node/write_edge
+  design below is not the implementation interface.
+- IngestionPipeline/QueryPipeline accept shared stores/clients. Helpers retain
+  ingest_document/answer_question with optional pipeline injection. Runtime
+  builds one shared instance for the UI/CLI.
+- Filename stems remain doc IDs; changed content needs replace=True. Replacement
+  extracts first and commits graph changes atomically. New documents can be
+  partially ingested: status=failed and errors indicate incomplete work.
+- IngestReport adds vector_pending/index_errors. The document ledger tracks
+  complete/partial work, including empty documents. Duplicate ingestion retries
+  indexing. Vector hits must pass authoritative graph status checks.
+- Runtime selects Chroma's local all-MiniLM-L6-v2 embedding; test embedders remain
+  injectable. Retries re-plan and search graph plus vector.
+- CriticDecision adds supported. At the cap, action=accept means stop retrying;
+  it does not authorize unsupported output. The pipeline uses reasoning's
+  NO_INFO_TEXT for unsupported drafts. Valid partial answers stay visible with
+  insufficient_evidence=True.
+- FinalResponse adds state, warnings, cited evidence; sources add filename,
+  page, and evidence_ids. All responses remain JSON-serializable.
+- UI uses uploaded evidence only. Offline demo has separate local stores and
+  scripted extraction/quotation. LLM_FAKE remains a scripted-test primitive.
+- Confidence is computed by reasoning validators. Critic uses structural/value
+  checks and a model audit of full-text support, rather than confidence alone.
+- Evaluation executes numbered Markdown questions or plain text lines and
+  reports outcomes/errors, without a fabricated accuracy score.
+
 The single source of truth for what every file takes in and gives back.
 **If you change a shape here, check the dependency map (section 5), update the code, and add a line to the edit log (section 7).** Announce it to the team before you push.
 

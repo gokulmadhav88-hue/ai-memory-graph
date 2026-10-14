@@ -18,3 +18,8 @@ scratch_run.py
 data/memory_store.json
 data/memory_store.json.tmp
 .agent-test-tmp*/
+.integration-backup/
+data/chroma/
+data/uploads/
+data/demo/
+.test-results/
